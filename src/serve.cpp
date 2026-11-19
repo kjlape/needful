@@ -8,6 +8,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <QSocketNotifier>
 #include <QStandardPaths>
@@ -49,6 +50,55 @@ bool dataOption(const QCommandLineParser &parser, QString *path) {
 QString suffix(const QString &universe) { return universe.isEmpty() ? QString() : "-" + universe; }
 QString serveUnit(const QString &universe) { return "needful-serve" + suffix(universe) + ".service"; }
 QString tailscaleUnit(const QString &universe) { return "needful-tailscale" + suffix(universe) + ".service"; }
+
+#ifdef Q_OS_MACOS
+constexpr bool OnMac = true;
+#else
+constexpr bool OnMac = false;
+#endif
+
+// launchd names a job by its label, and the agent's file is the label.plist.
+QString agentLabel(const QString &kind, const QString &universe) {
+    return "faithbibleinstitute.needful." + kind + suffix(universe);
+}
+// The service files this platform installs: systemd units or launchd agents.
+QString serveFile(const QString &universe) { return OnMac ? agentLabel("serve", universe) + ".plist" : serveUnit(universe); }
+QString tailscaleFile(const QString &universe) {
+    return OnMac ? agentLabel("tailscale", universe) + ".plist" : tailscaleUnit(universe);
+}
+QString serviceDirectory() { return OnMac ? launchAgentsDirectory() : systemdUserDirectory(); }
+QString logFile(const QString &kind, const QString &universe) {
+    return QDir::homePath() + "/Library/Logs/needful-" + kind + suffix(universe) + ".log";
+}
+
+#ifdef Q_OS_UNIX
+// launchd's own domain for this user's logged-in session.
+QString launchDomain() { return QString("gui/%1").arg(::getuid()); }
+#else
+QString launchDomain() { return {}; }
+#endif
+int launchctl(const QStringList &arguments, bool quiet = false) {
+    const QString program = QStandardPaths::findExecutable("launchctl");
+    if (program.isEmpty())
+        return -1;
+    QProcess process;
+    process.setProgram(program);
+    process.setArguments(arguments);
+    if (quiet) {
+        process.setStandardOutputFile(QProcess::nullDevice());
+        process.setStandardErrorFile(QProcess::nullDevice());
+    } else {
+        process.setProcessChannelMode(QProcess::ForwardedChannels);
+    }
+    process.start();
+    process.waitForFinished(-1);
+    return process.exitStatus() == QProcess::NormalExit ? process.exitCode() : -1;
+}
+// How to start the page again by hand.
+QString startCommand(const QString &universe) {
+    return OnMac ? "launchctl kickstart " + launchDomain() + "/" + agentLabel("serve", universe)
+                 : "systemctl --user start " + serveUnit(universe);
+}
 
 // --universe as a name, empty for your own; false with a message for one
 // this computer doesn't know, unless it's being removed.
@@ -227,7 +277,8 @@ int serve(const QStringList &arguments) {
 
 int install(const QStringList &arguments) {
     QCommandLineParser parser;
-    parser.setApplicationDescription("Install systemd user units that keep the phone page running.");
+    parser.setApplicationDescription(OnMac ? "Install launchd agents that keep the phone page running."
+                                           : "Install systemd user units that keep the phone page running.");
     parser.addHelpOption();
     parser.addPositionalArgument("serve install", "", "serve install");
     parser.addOption({"port", QString("Port for the page (%1)").arg(DefaultServePort), "port"});
@@ -255,16 +306,16 @@ int install(const QStringList &arguments) {
         setup.tailscaled = QStandardPaths::findExecutable("tailscaled");
         if (setup.tailscaled.isEmpty() || tailscale().isEmpty())
             return fail("--tailscale needs tailscale and tailscaled. On Arch: pacman -S tailscale "
-                        "(the system's tailscaled service doesn't need to run).");
+                        "(the system's tailscaled service doesn't need to run). On macOS: brew install tailscale.");
         setup.stateDir = tailscaleStateDirectory(universe);
         if (!QDir().mkpath(setup.stateDir))
             return fail("Could not create " + setup.stateDir);
     }
 
-    const QDir units(systemdUserDirectory());
+    const QDir units(serviceDirectory());
     if (!units.mkpath("."))
         return fail("Could not create " + units.path());
-    const auto files = serviceUnits(setup);
+    const auto files = OnMac ? launchAgents(setup) : serviceUnits(setup);
     for (auto it = files.begin(); it != files.end(); ++it) {
         QSaveFile file(units.filePath(it.key()));
         if (!file.open(QIODevice::WriteOnly) || file.write(it.value()) < 0 || !file.commit())
@@ -279,10 +330,24 @@ int install(const QStringList &arguments) {
     }
 
     const QString also = universe.isEmpty() ? QString() : " --universe " + universe;
-    QString steps = "\nNext:\n  systemctl --user daemon-reload\n  systemctl --user enable --now " + serveUnit(universe);
-    if (setup.tailscale)
-        steps += " " + tailscaleUnit(universe) + "\n  needful serve login" + also +
-                 "       (once, to add the needful" + suffix(universe) + " node to your tailnet)";
+    QString steps;
+    if (OnMac) {
+        // launchd has no enable step to leave for you; a loaded agent starts now and at every login.
+        QDir().mkpath(QDir::homePath() + "/Library/Logs");
+        const bool haveLaunchctl = !QStandardPaths::findExecutable("launchctl").isEmpty();
+        for (auto it = files.begin(); haveLaunchctl && it != files.end(); ++it)
+            if (!loadLaunchAgent(units.path(), it.key()))
+                return fail("launchctl could not load " + it.key());
+        steps = haveLaunchctl ? "\nStarted, and it starts again at login." : "\nWritten; it loads at your next login.";
+        if (setup.tailscale)
+            steps += "\n\nNext:\n  needful serve login" + also +
+                     "       (once, to add the needful" + suffix(universe) + " node to your tailnet)";
+    } else {
+        steps = "\nNext:\n  systemctl --user daemon-reload\n  systemctl --user enable --now " + serveUnit(universe);
+        if (setup.tailscale)
+            steps += " " + tailscaleUnit(universe) + "\n  needful serve login" + also +
+                     "       (once, to add the needful" + suffix(universe) + " node to your tailnet)";
+    }
     steps += QString("\n\nThen open http://127.0.0.1:%1/ here").arg(port);
     steps += setup.tailscale ? ", or https://needful" + suffix(universe) + ".<your tailnet>.ts.net/ on your phone." : ".";
     print(stdout, steps);
@@ -306,13 +371,13 @@ int login(const QStringList &arguments) {
         return 1;
     const QString hostname = parser.isSet("hostname") ? parser.value("hostname") : "needful" + suffix(universe);
     if (tailscale().isEmpty())
-        return fail("tailscale isn't installed. On Arch: pacman -S tailscale");
+        return fail("tailscale isn't installed. On Arch: pacman -S tailscale. On macOS: brew install tailscale");
     const QString also = universe.isEmpty() ? QString() : " --universe " + universe;
     if (!QFileInfo::exists(tailscaleSocket(universe)))
         return fail("Needful's Tailscale node isn't running. Install and start it first:\n"
-                    "  needful serve install --tailscale" + also + "\n"
-                    "  systemctl --user daemon-reload\n"
-                    "  systemctl --user enable --now " + tailscaleUnit(universe));
+                    "  needful serve install --tailscale" + also +
+                    (OnMac ? QString() : "\n  systemctl --user daemon-reload\n  systemctl --user enable --now " +
+                                             tailscaleUnit(universe)));
 
     print(stdout, "Signing the " + hostname + " node in; open the link tailscale prints if it asks.");
     if (runTailscale(universe, {"up", "--hostname=" + hostname}) != 0)
@@ -359,7 +424,7 @@ int status(const QStringList &arguments) {
                   .toJson().constData(), stdout);
     } else {
         print(stdout, answering ? "Serving at " + local : "Not serving on port " + QString::number(port) +
-                                                              ". Start it with: systemctl --user start " + serveUnit(universe));
+                                                              ". Start it with: " + startCommand(universe));
         if (!tailnet.isEmpty())
             print(stdout, "On your tailnet at " + tailnet);
         else if (QFileInfo::exists(tailscaleSocket(universe)))
@@ -371,7 +436,7 @@ int status(const QStringList &arguments) {
 
 int uninstall(const QStringList &arguments) {
     QCommandLineParser parser;
-    parser.setApplicationDescription("Stop and remove the systemd user units.");
+    parser.setApplicationDescription(OnMac ? "Stop and remove the launchd agents." : "Stop and remove the systemd user units.");
     parser.addHelpOption();
     parser.addPositionalArgument("serve uninstall", "", "serve uninstall");
     parser.addOption({"universe", "Another universe's install, like hers", "name"});
@@ -379,16 +444,20 @@ int uninstall(const QStringList &arguments) {
     QString universe;
     if (!universeOption(parser, &universe, true))
         return 1;
-    QDir units(systemdUserDirectory());
+    QDir units(serviceDirectory());
     QStringList present;
-    for (const QString &name : {serveUnit(universe), tailscaleUnit(universe)})
+    for (const QString &name : {serveFile(universe), tailscaleFile(universe)})
         if (units.exists(name))
             present.append(name);
     if (present.isEmpty())
-        return fail("Nothing to remove; no Needful units in " + units.path());
-    const QString systemctl = QStandardPaths::findExecutable("systemctl");
-    if (!systemctl.isEmpty())
+        return fail("Nothing to remove; no Needful services in " + units.path());
+    const QString systemctl = OnMac ? QString() : QStandardPaths::findExecutable("systemctl");
+    if (OnMac) {
+        for (const QString &name : present)
+            unloadLaunchAgent(name);
+    } else if (!systemctl.isEmpty()) {
         QProcess::execute(systemctl, QStringList{"--user", "disable", "--now"} + present);
+    }
     for (const QString &name : present) {
         units.remove(name);
         print(stdout, "Removed " + units.filePath(name));
@@ -407,11 +476,25 @@ QString systemdUserDirectory() {
     return QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + "/systemd/user";
 }
 
+// Replaces a loaded agent with the file as it is now, so reinstalling works.
+bool loadLaunchAgent(const QString &directory, const QString &file) {
+    const QString label = file.chopped(6);
+    launchctl({"bootout", launchDomain() + "/" + label}, true);
+    return launchctl({"bootstrap", launchDomain(), directory + "/" + file}) == 0;
+}
+void unloadLaunchAgent(const QString &file) { launchctl({"bootout", launchDomain() + "/" + file.chopped(6)}, true); }
+
+QString launchAgentsDirectory() { return QDir::homePath() + "/Library/LaunchAgents"; }
+
 QString tailscaleStateDirectory(const QString &universe) {
     return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/tailscale" + suffix(universe);
 }
 
 QString tailscaleSocket(const QString &universe) {
+#ifdef Q_OS_MACOS
+    // macOS has no per-user runtime folder; the state folder's parent is stable.
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/needful-tailscaled" + suffix(universe) + ".sock";
+#endif
     return QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation) + "/needful-tailscaled" + suffix(universe) +
            ".sock";
 }
@@ -451,6 +534,60 @@ QMap<QString, QByteArray> serviceUnits(const ServeSetup &setup) {
     return units;
 }
 
+namespace {
+QByteArray xml(const QString &text) {
+    QString escaped = text;
+    escaped.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    return escaped.toUtf8();
+}
+
+// A launchd job that starts at login and is restarted if it exits.
+QByteArray agentPlist(const QString &label, const QStringList &arguments, const QString &log, int everySeconds = 0) {
+    QByteArray list;
+    for (const QString &argument : arguments)
+        list += "        <string>" + xml(argument) + "</string>\n";
+    return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+           "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+           "<plist version=\"1.0\">\n<dict>\n"
+           "    <key>Label</key>\n    <string>" + xml(label) + "</string>\n"
+           "    <key>ProgramArguments</key>\n    <array>\n" + list + "    </array>\n"
+           "    <key>RunAtLoad</key>\n    <true/>\n" + (everySeconds > 0 ? "    <key>StartInterval</key>\n    <integer>" + QByteArray::number(everySeconds) + "</integer>\n"
+                               : QByteArray("    <key>KeepAlive</key>\n    <true/>\n"
+                                            "    <key>ThrottleInterval</key>\n    <integer>5</integer>\n")) +
+           "    <key>StandardOutPath</key>\n    <string>" + xml(log) + "</string>\n"
+           "    <key>StandardErrorPath</key>\n    <string>" + xml(log) + "</string>\n"
+           "</dict>\n</plist>\n";
+}
+}
+
+QMap<QString, QByteArray> launchAgents(const ServeSetup &setup) {
+    QStringList serve{setup.needful, "serve", "--port", QString::number(setup.port)};
+    if (!setup.data.isEmpty())
+        serve += {"--data", setup.data};
+    QMap<QString, QByteArray> agents;
+    const QString universe = setup.universe;
+    agents[agentLabel("serve", universe) + ".plist"] = agentPlist(agentLabel("serve", universe), serve, logFile("serve", universe));
+    if (setup.tailscale) {
+        // The same userspace node as on Linux, so the system's Tailscale is left alone.
+        const QStringList node{setup.tailscaled, "--tun=userspace-networking", "--statedir=" + setup.stateDir,
+                               "--socket=" + tailscaleSocket(universe), "--port=0"};
+        agents[agentLabel("tailscale", universe) + ".plist"] =
+            agentPlist(agentLabel("tailscale", universe), node, logFile("tailscale", universe));
+    }
+    return agents;
+}
+
+namespace {
+// Safe as it is in a shell, else single-quoted.
+QString shellQuote(const QString &text) {
+    static const QRegularExpression plain("^[A-Za-z0-9_./~@%+=:,-]+$");
+    if (plain.match(text).hasMatch())
+        return text;
+    QString quoted = text;
+    return "'" + quoted.replace("'", "'\\''") + "'";
+}
+}
+
 const QString RsyncService = "needful-rsync.service";
 const QString RsyncTimer = "needful-rsync.timer";
 
@@ -458,12 +595,21 @@ QList<QStringList> rsyncCommands(const RsyncSetup &setup) {
     // -u keeps the receiver's copy when it's newer. Every copy of a file
     // carries the time its one writer saved it, so clocks that disagree
     // between computers can't make an old copy look new. Nothing is deleted.
-    const QStringList options{"-au", "--protect-args", "--timeout=60",
-                              "-e", "ssh -o BatchMode=yes -o ConnectTimeout=15",
-                              "--include=/*.json", "--exclude=*"};
-    const QString here = setup.local + "/machines/", there = setup.host + ":" + setup.remote + "/machines/";
+    QStringList options{"-au", "--timeout=60", "-e", "ssh -o BatchMode=yes -o ConnectTimeout=15",
+                        "--include=/*.json", "--exclude=*"};
+    // Without --protect-args the other computer's shell reads the path, so
+    // anything it would split or expand is quoted.
+    QString remote = setup.remote + "/machines/";
+    if (setup.modern)
+        options.insert(1, "--protect-args");
+    else
+        remote = shellQuote(remote);
+    const QString here = setup.local + "/machines/", there = setup.host + ":" + remote;
+    QStringList push{"--mkpath"};
+    if (!setup.modern)
+        push.clear();
     return {QStringList{setup.rsync} + options + QStringList{there, here},
-            QStringList{setup.rsync} + options + QStringList{"--mkpath", here, there}};
+            QStringList{setup.rsync} + options + push + QStringList{here, there}};
 }
 
 QMap<QString, QByteArray> rsyncUnits(const RsyncSetup &setup) {
@@ -490,6 +636,46 @@ QMap<QString, QByteArray> rsyncUnits(const RsyncSetup &setup) {
                         "[Install]\n"
                         "WantedBy=timers.target\n";
     return units;
+}
+
+const QString RsyncAgent = "faithbibleinstitute.needful.rsync.plist";
+
+QMap<QString, QByteArray> rsyncLaunchAgents(const RsyncSetup &setup) {
+    // Both commands in one job, the pull first, stopping if it fails.
+    QStringList both;
+    for (const QStringList &command : rsyncCommands(setup)) {
+        QStringList words;
+        for (const QString &word : command)
+            words.append(shellQuote(word));
+        both.append(words.join(' '));
+    }
+    int seconds = setup.every.chopped(1).toInt();
+    switch (setup.every.back().toLatin1()) {
+    case 'h': seconds *= 3600; break;
+    case 'm': seconds *= 60; break;
+    default: break;
+    }
+    return {{RsyncAgent, agentPlist(RsyncAgent.chopped(6), {"/bin/sh", "-c", both.join(" && ")},
+                                    QDir::homePath() + "/Library/Logs/needful-rsync.log", seconds)}};
+}
+
+QString findRsync() {
+    for (const QString &candidate : {"/opt/homebrew/bin/rsync", "/usr/local/bin/rsync"})
+        if (QFileInfo(candidate).isExecutable() && rsyncIsModern(candidate))
+            return candidate;
+    return QStandardPaths::findExecutable("rsync");
+}
+
+bool rsyncIsModern(const QString &rsync) {
+    QProcess process;
+    process.start(rsync, {"--version"});
+    if (!process.waitForFinished(5000))
+        return false;
+    const QString first = QString::fromUtf8(process.readAllStandardOutput()).section('\n', 0, 0);
+    if (first.contains("openrsync"))
+        return false;
+    const QRegularExpressionMatch version = QRegularExpression("version (\\d+)\\.").match(first);
+    return version.hasMatch() && version.captured(1).toInt() >= 3;
 }
 
 int runServe(const QStringList &arguments) {

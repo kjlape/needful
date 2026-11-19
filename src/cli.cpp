@@ -454,9 +454,23 @@ QString count(int n) { return QLocale().toString(n); }
 // and SSH, for keeping in step with no sync tool or service at all.
 int syncRsync(const Command &command, const SyncFolder &folder) {
     const QString step = command.argument(2), host = command.argument(3);
-    QDir units(systemdUserDirectory());
-    const QString systemctl = QStandardPaths::findExecutable("systemctl");
+#ifdef Q_OS_MACOS
+    constexpr bool OnMac = true;
+#else
+    constexpr bool OnMac = false;
+#endif
+    // A systemd timer on Linux, a launchd agent on macOS.
+    QDir units(OnMac ? launchAgentsDirectory() : systemdUserDirectory());
+    const QString systemctl = OnMac ? QString() : QStandardPaths::findExecutable("systemctl");
     if (step == "uninstall") {
+        if (OnMac) {
+            if (!units.exists(RsyncAgent))
+                return fail("Nothing to remove; no rsync agent in " + units.path());
+            unloadLaunchAgent(RsyncAgent);
+            if (units.remove(RsyncAgent))
+                print(stdout, "Removed " + units.filePath(RsyncAgent));
+            return 0;
+        }
         if (!units.exists(RsyncService) && !units.exists(RsyncTimer))
             return fail("Nothing to remove; no rsync timer in " + units.path());
         if (!systemctl.isEmpty())
@@ -472,10 +486,12 @@ int syncRsync(const Command &command, const SyncFolder &folder) {
         return fail("Use needful sync rsync install <host> (as ssh knows it), or needful sync rsync uninstall.");
 
     RsyncSetup setup;
-    setup.rsync = QStandardPaths::findExecutable("rsync");
+    setup.rsync = findRsync();
     if (setup.rsync.isEmpty() || QStandardPaths::findExecutable("ssh").isEmpty())
-        return fail("This needs rsync and ssh, here and on " + host + ". On Arch: pacman -S rsync openssh");
-    if (systemctl.isEmpty())
+        return fail("This needs rsync and ssh, here and on " + host + ". On Arch: pacman -S rsync openssh. "
+                    "macOS has both; brew install rsync gives it a newer one.");
+    setup.modern = rsyncIsModern(setup.rsync);
+    if (!OnMac && systemctl.isEmpty())
         return fail("This needs systemd's user services to run the timer.");
     static const QRegularExpression interval("^[1-9]\\d*(s|m|h)$");
     setup.every = command.parser.value("every").trimmed();
@@ -507,16 +523,22 @@ int syncRsync(const Command &command, const SyncFolder &folder) {
 
     if (!units.mkpath("."))
         return fail("Could not create " + units.path());
-    const auto files = rsyncUnits(setup);
+    const auto files = OnMac ? rsyncLaunchAgents(setup) : rsyncUnits(setup);
     for (auto it = files.begin(); it != files.end(); ++it) {
         QSaveFile file(units.filePath(it.key()));
         if (!file.open(QIODevice::WriteOnly) || file.write(it.value()) < 0 || !file.commit())
             return fail("Could not write " + file.fileName());
         print(stdout, "Wrote " + file.fileName());
     }
-    QProcess::execute(systemctl, {"--user", "daemon-reload"});
-    if (QProcess::execute(systemctl, {"--user", "enable", "--now", RsyncTimer}) != 0)
-        return fail("Could not start the timer: systemctl --user enable --now " + RsyncTimer);
+    if (OnMac) {
+        QDir().mkpath(QDir::homePath() + "/Library/Logs");
+        if (!QStandardPaths::findExecutable("launchctl").isEmpty() && !loadLaunchAgent(units.path(), RsyncAgent))
+            return fail("launchctl could not load " + RsyncAgent);
+    } else {
+        QProcess::execute(systemctl, {"--user", "daemon-reload"});
+        if (QProcess::execute(systemctl, {"--user", "enable", "--now", RsyncTimer}) != 0)
+            return fail("Could not start the timer: systemctl --user enable --now " + RsyncTimer);
+    }
     print(stdout, QString("Swapping changes with %1 every %2, while this computer is on. "
                           "Only one of the two computers needs this timer.\n"
                           "Stop with: needful sync rsync uninstall").arg(host, setup.every));

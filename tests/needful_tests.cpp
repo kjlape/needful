@@ -1026,6 +1026,33 @@ private slots:
         QVERIFY(hers["needful-tailscale-hers.service"].contains(" --socket=%t/needful-tailscaled-hers.sock --port=0\n"));
     }
 
+    void launchAgentsAreWritten()
+    {
+        ServeSetup setup;
+        setup.needful = "/Applications/Needful.app/Contents/MacOS/needful";
+        setup.port = 9000;
+        setup.data = "/Users/me/A & B/needful.json";
+        setup.tailscale = true;
+        setup.tailscaled = "/opt/homebrew/bin/tailscaled";
+        setup.stateDir = "/Users/me/Library/Application Support/needful/tailscale";
+        const auto agents = launchAgents(setup);
+        QCOMPARE(agents.keys(), (QStringList{"faithbibleinstitute.needful.serve.plist",
+                                             "faithbibleinstitute.needful.tailscale.plist"}));
+        const QByteArray serve = agents["faithbibleinstitute.needful.serve.plist"];
+        QVERIFY(serve.contains("<string>faithbibleinstitute.needful.serve</string>"));
+        QVERIFY(serve.contains("<string>/Applications/Needful.app/Contents/MacOS/needful</string>\n"
+                               "        <string>serve</string>\n        <string>--port</string>\n"
+                               "        <string>9000</string>\n        <string>--data</string>\n"
+                               "        <string>/Users/me/A &amp; B/needful.json</string>"));
+        QVERIFY(serve.contains("<key>KeepAlive</key>"));
+        QVERIFY(agents["faithbibleinstitute.needful.tailscale.plist"].contains("<string>--tun=userspace-networking</string>"));
+        setup.tailscale = false;
+        QCOMPARE(launchAgents(setup).size(), 1);
+
+        setup.universe = "hers";
+        QCOMPARE(launchAgents(setup).keys(), (QStringList{"faithbibleinstitute.needful.serve-hers.plist"}));
+    }
+
     void rsyncUnitsAreWritten()
     {
         RsyncSetup setup;
@@ -1049,6 +1076,33 @@ private slots:
     // The real commands, with a stand-in for ssh: each side ends up with the
     // newest copy of every file, and nobody's own file is overwritten by an
     // older copy of it.
+    void rsyncLaunchAgentRunsBothCommands()
+    {
+        RsyncSetup setup;
+        setup.rsync = "/opt/homebrew/bin/rsync";
+        setup.local = "/Users/me/My Sync/needful";
+        setup.host = "desktop";
+        setup.remote = "Sync/needful";
+        setup.every = "10m";
+        const QByteArray agent = rsyncLaunchAgents(setup)["faithbibleinstitute.needful.rsync.plist"];
+        QVERIFY(agent.contains("<key>StartInterval</key>\n    <integer>600</integer>"));
+        QVERIFY(!agent.contains("KeepAlive"));
+        QVERIFY(agent.contains("<string>/bin/sh</string>"));
+        // Pull, then push, as one shell line with the spaced path quoted.
+        QVERIFY(agent.contains("/opt/homebrew/bin/rsync -au --protect-args"));
+        QVERIFY(agent.contains(" &amp;&amp; /opt/homebrew/bin/rsync -au --protect-args "));
+        QVERIFY(agent.contains("'/Users/me/My Sync/needful/machines/'"));
+
+        // Without --protect-args or --mkpath, the remote path is quoted instead.
+        setup.modern = false;
+        setup.remote = "My Sync/needful";
+        const auto old = rsyncCommands(setup);
+        QVERIFY(!old[0].contains("--protect-args"));
+        QVERIFY(!old[1].contains("--mkpath"));
+        QCOMPARE(old[0].constLast(), QString("/Users/me/My Sync/needful/machines/"));
+        QCOMPARE(old[0].at(old[0].size() - 2), QString("desktop:'My Sync/needful/machines/'"));
+    }
+
     void rsyncKeepsTheNewestCopies()
     {
         const QString rsync = QStandardPaths::findExecutable("rsync");
@@ -1079,6 +1133,7 @@ private slots:
 
         RsyncSetup setup;
         setup.rsync = rsync;
+        setup.modern = rsyncIsModern(rsync);
         setup.local = here;
         setup.host = "desktop";
         setup.remote = there;
@@ -1100,35 +1155,52 @@ private slots:
     {
         QTemporaryDir dir;
         const QByteArray oldConfig = qgetenv("XDG_CONFIG_HOME"), oldData = qgetenv("XDG_DATA_HOME");
+        const QByteArray oldHome = qgetenv("HOME"), path = qgetenv("PATH");
         qputenv("XDG_CONFIG_HOME", dir.filePath("config").toUtf8());
         qputenv("XDG_DATA_HOME", dir.filePath("data").toUtf8());
+#ifdef Q_OS_MACOS
+        // Agents go under the home folder, and with no launchctl to find the
+        // test never loads any into this session.
+        qputenv("HOME", dir.path().toUtf8());
+        qputenv("PATH", dir.filePath("empty").toUtf8());
+        const QString folder = dir.filePath("Library/LaunchAgents/");
+        const QString mine = "faithbibleinstitute.needful.serve.plist", hersFile = "faithbibleinstitute.needful.serve-hers.plist";
+        const QByteArray port8899 = "<string>8899</string>";
+        const QByteArray port8788 = "<string>8788</string>";
+#else
+        const QString folder = dir.filePath("config/systemd/user/");
+        const QString mine = "needful-serve.service", hersFile = "needful-serve-hers.service";
+        const QByteArray port8899 = " serve --port 8899\n";
+        const QByteArray port8788 = " serve --port 8788 --data ";
+#endif
         const int result = runServe({"needful", "serve", "install", "--port", "8899"});
-        const QString unit = dir.filePath("config/systemd/user/needful-serve.service");
+        const QString unit = folder + mine;
         const bool written = QFile::exists(unit);
         const QByteArray contents = contentsOf(unit);
         // Hers goes beside it, on the first port nothing else uses.
         QString error;
         const QString hersData = Universes().add("hers", &error);
         const int hersResult = runServe({"needful", "serve", "install", "--universe", "hers"});
-        const QByteArray hers = contentsOf(dir.filePath("config/systemd/user/needful-serve-hers.service"));
+        const QByteArray hers = contentsOf(folder + hersFile);
         const QByteArray mineAfter = contentsOf(unit);
         const int unknown = runServe({"needful", "serve", "install", "--universe", "nobody"});
         // With no systemctl to find, so the test never touches this session's services.
-        const QByteArray path = qgetenv("PATH");
         qputenv("PATH", dir.filePath("empty").toUtf8());
         const int removed = runServe({"needful", "serve", "uninstall", "--universe", "hers"});
         qputenv("PATH", path);
-        const bool hersGone = !QFile::exists(dir.filePath("config/systemd/user/needful-serve-hers.service"));
+        const bool hersGone = !QFile::exists(folder + hersFile);
         auto restore = [](const char *name, const QByteArray &value) {
             if (value.isEmpty()) qunsetenv(name); else qputenv(name, value);
         };
         restore("XDG_CONFIG_HOME", oldConfig);
         restore("XDG_DATA_HOME", oldData);
+        restore("HOME", oldHome);
         QCOMPARE(result, 0);
         QVERIFY(written);
-        QVERIFY(contents.contains(" serve --port 8899\n"));
+        QVERIFY(contents.contains(port8899));
         QCOMPARE(hersResult, 0);
-        QVERIFY(hers.contains(" serve --port 8788 --data " + hersData.toUtf8() + "\n"));
+        QVERIFY(hers.contains(port8788));
+        QVERIFY(hers.contains(hersData.toUtf8()));
         QCOMPARE(mineAfter, contents);
         QCOMPARE(unknown, 1);
         QCOMPARE(removed, 0);

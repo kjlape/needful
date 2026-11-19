@@ -6,8 +6,8 @@
 
 // needful serve: the phone page as a daemon, and on Linux, the systemd user
 // units and a Tailscale node of its own that put it on the tailnet. Nothing
-// here is needed by the window, so other platforms simply don't offer the
-// install commands' Linux parts.
+// here is needed by the window. Installing is systemd on Linux and launchd on
+// macOS; elsewhere only plain `needful serve` is offered.
 
 struct ServeSetup {
     QString needful;     // Absolute path of the needful binary.
@@ -24,6 +24,9 @@ constexpr int DefaultServePort = 8787;
 // File name to contents, for ~/.config/systemd/user.
 QMap<QString, QByteArray> serviceUnits(const ServeSetup &setup);
 QString systemdUserDirectory();
+// The same two services as launchd agents, for ~/Library/LaunchAgents on macOS.
+QMap<QString, QByteArray> launchAgents(const ServeSetup &setup);
+QString launchAgentsDirectory();
 // For a universe other than your own (empty), each is its own.
 QString tailscaleStateDirectory(const QString &universe = {});
 QString tailscaleSocket(const QString &universe = {});
@@ -34,12 +37,27 @@ QString tailscaleSocket(const QString &universe = {});
 // keeps whichever copy its writer saved last.
 struct RsyncSetup {
     QString rsync;  // Absolute path of rsync.
+    // False for macOS's own openrsync (and rsync 2), which has neither
+    // --protect-args nor --mkpath; a remote path is then quoted for the shell.
+    bool modern = true;
     QString local;  // This machine's sync folder.
     QString host;   // As ssh knows it: desktop, me@desktop.lan.
     QString remote; // The folder there; relative paths are from its home.
     QString every = "5m";
 };
 QMap<QString, QByteArray> rsyncUnits(const RsyncSetup &setup);
+// The same swap as a launchd agent on macOS: one job that runs both commands
+// every interval, and once at load.
+QMap<QString, QByteArray> rsyncLaunchAgents(const RsyncSetup &setup);
+// Homebrew's rsync 3 when there is one, since macOS ships an older openrsync.
+QString findRsync();
+bool rsyncIsModern(const QString &rsync);
+extern const QString RsyncAgent;  // The agent's file name.
+
+// Load or unload a launchd agent file from ~/Library/LaunchAgents, replacing
+// one already loaded. False when launchctl refuses it.
+bool loadLaunchAgent(const QString &directory, const QString &file);
+void unloadLaunchAgent(const QString &file);
 // Pull first, then push.
 QList<QStringList> rsyncCommands(const RsyncSetup &setup);
 extern const QString RsyncService, RsyncTimer;

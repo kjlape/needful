@@ -102,7 +102,10 @@ needful sync rsync uninstall
 ```
 
 It swaps once right away, so a missing SSH key shows up then and not in a
-log, then installs a systemd user timer. It needs a key that works without
+log, then installs a systemd user timer (a launchd agent in
+`~/Library/LaunchAgents` on macOS, logging to `~/Library/Logs/needful-rsync.log`).
+On macOS it uses Homebrew's rsync when there is one, and otherwise the system's
+older `openrsync`, which works the same here. It needs a key that works without
 a prompt (`ssh -o BatchMode=yes desktop true`). `--remote-folder` names the
 folder there if it isn't at the same path, and `--every 30s|5m|1h` sets how
 often.
@@ -163,6 +166,15 @@ systemctl --user enable --now needful-serve.service needful-tailscale.service
 needful serve login     # once: open the link it prints to add the node
 needful serve status    # http://127.0.0.1:8787/ and https://needful.<tailnet>.ts.net/
 ```
+
+On macOS the same command installs launchd agents in `~/Library/LaunchAgents`
+(`faithbibleinstitute.needful.serve`, plus `.tailscale` with `--tailscale`),
+loads them straight away, and they start again at every login. There is no
+`systemctl` step; `--tailscale` needs `brew install tailscale`. Logs are in
+`~/Library/Logs/needful-serve.log`. The agent runs the binary where it was
+when you installed, so install from `/Applications/Needful.app` (run
+`/Applications/Needful.app/Contents/MacOS/needful serve install`), and run it
+again if you move the app.
 
 The tailnet needs MagicDNS and HTTPS certificates turned on (Tailscale admin
 console, DNS). Without `--tailscale`, only the first service is installed, and
