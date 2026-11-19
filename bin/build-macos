@@ -1,0 +1,65 @@
+#!/bin/sh
+# Builds Needful.app and Needful-<version>.dmg for macOS into build/.
+# Needs Qt 6 (qmake6 on PATH, or under ~/Qt/<version>/macos) and rsvg-convert.
+set -eu
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+BUILD="$ROOT/build"
+
+if ! command -v qmake6 >/dev/null 2>&1; then
+    QT_BIN="$(ls -d "$HOME"/Qt/*/macos/bin 2>/dev/null | sort -V | tail -1)"
+    [ -n "$QT_BIN" ] || { echo "qmake6 not found; install Qt 6 or put it on PATH" >&2; exit 1; }
+    PATH="$QT_BIN:$PATH"
+fi
+command -v rsvg-convert >/dev/null 2>&1 || { echo "rsvg-convert not found (brew install librsvg)" >&2; exit 1; }
+
+mkdir -p "$BUILD"
+cd "$BUILD"
+qmake6 "$ROOT/needful.pro"
+make -j"$(sysctl -n hw.ncpu)"
+
+# The command line tool stays `needful`; the app people see is Needful.
+# Staged in its own folder: the volume is case-insensitive, so Needful.app
+# would otherwise be the same path as the needful.app make just built.
+OUT="$BUILD/macos"
+VERSION="$(sed -n 's/^VERSION *= *//p' "$ROOT/needful.pro")"
+DMG="$OUT/Needful-$VERSION.dmg"
+APP="$OUT/Needful.app"
+rm -rf "$OUT"
+mkdir -p "$OUT"
+ditto "$BUILD/needful.app" "$APP"
+
+# App icon, from the same SVG the Linux package uses.
+mkdir "$OUT/Needful.iconset"
+for size in 16 32 128 256 512; do
+    rsvg-convert -w "$size" -h "$size" "$ROOT/pkgbuild/needful.svg" -o "$OUT/Needful.iconset/icon_${size}x${size}.png"
+    rsvg-convert -w "$((size * 2))" -h "$((size * 2))" "$ROOT/pkgbuild/needful.svg" -o "$OUT/Needful.iconset/icon_${size}x${size}@2x.png"
+done
+mkdir -p "$APP/Contents/Resources"
+iconutil -c icns "$OUT/Needful.iconset" -o "$APP/Contents/Resources/Needful.icns"
+rm -rf "$OUT/Needful.iconset"
+
+PLIST="$APP/Contents/Info.plist"
+set_plist() {
+    /usr/libexec/PlistBuddy -c "Set :$1 $2" "$PLIST" 2>/dev/null ||
+        /usr/libexec/PlistBuddy -c "Add :$1 string $2" "$PLIST"
+}
+set_plist CFBundleName Needful
+set_plist CFBundleDisplayName Needful
+set_plist CFBundleIconFile Needful
+
+macdeployqt "$APP" -qmldir="$ROOT/src"
+# Commands run on the offscreen platform, which macdeployqt does not bundle.
+cp "$(qmake6 -query QT_INSTALL_PLUGINS)/platforms/libqoffscreen.dylib" "$APP/Contents/PlugIns/platforms/"
+# Ad hoc signature, so the edited bundle at least launches on this Mac.
+codesign --force --deep -s - "$APP"
+
+STAGE="$OUT/dmg"
+rm -rf "$STAGE"
+mkdir "$STAGE"
+ditto "$APP" "$STAGE/Needful.app"
+ln -s /Applications "$STAGE/Applications"
+hdiutil create -volname Needful -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
+rm -rf "$STAGE"
+
+echo "Built $APP and $DMG"
