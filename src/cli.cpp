@@ -13,6 +13,7 @@
 #include <cstdio>
 
 #include "backend.h"
+#include "serve.h"
 
 namespace {
 void print(FILE *stream, const QString &text) { fprintf(stream, "%s\n", qPrintable(text)); }
@@ -447,11 +448,17 @@ QString cliSummary() {
            "  history [--context C]            What was done and noted, newest first\n"
            "  contexts [add <path>]            List or add contexts\n"
            "  skill [install]                  Print the skill for coding agents, or install it\n\n"
+           "Phone page (needful help serve):\n"
+           "  serve [--port 8787]              Serve the page and its API until stopped\n"
+           "  serve install [--tailscale]      Keep it running as a systemd user service\n"
+           "  serve login                      Put it on your tailnet as needful.<tailnet>.ts.net\n"
+           "  serve status                     Whether it's serving, and where\n"
+           "  serve uninstall                  Stop it and remove the services\n\n"
            "Every command takes --data <path>; the usual file is\n  " + Backend::defaultDataPath();
 }
 
 bool isCliCommand(const QString &word) {
-    return QStringList{"list", "add", "done", "snooze", "today", "log", "history", "contexts", "skill",
+    return QStringList{"list", "add", "done", "snooze", "today", "log", "history", "contexts", "skill", "serve",
                        "help", "--help", "-h", "--version", "-v"}
         .contains(word);
 }
@@ -471,5 +478,6 @@ int runCli(const QStringList &arguments) {
            : command == "history"  ? history(arguments)
            : command == "contexts" ? contexts(arguments)
            : command == "skill"    ? skill(arguments)
+           : command == "serve"    ? runServe(arguments)
                                    : help(arguments);
 }

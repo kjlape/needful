@@ -3,10 +3,18 @@
 #include <QTemporaryDir>
 #include <QtTest>
 
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QTcpSocket>
+
 #include "backend.h"
+#include "httpserver.h"
+#include "serve.h"
 #include "store.h"
 #include "theme.h"
 #include "translator.h"
+#include "webapi.h"
 
 namespace {
 Task weekly(const QString &title, int priority, const QDate &due) {
@@ -353,6 +361,253 @@ private slots:
         backend.removeLog(again);
         QVERIFY(!backend.store().logEntry(again));
         QCOMPARE(backend.store().tasks.size(), tasks + 1);
+    }
+
+    // Two processes on one file: each change lands on top of the other's,
+    // even before the file watcher has noticed.
+    void concurrentWritersDontOverwrite()
+    {
+        QTemporaryDir dir;
+        const QString path = dir.filePath("needful.json");
+        Backend window(path), phone(path);
+        window.setToday(saturday);
+        phone.setToday(saturday);
+        window.saveTask({{"title", "From the window"}});
+        phone.saveTask({{"title", "From the phone"}});
+        window.saveTask({{"title", "From the window again"}});
+        Store disk;
+        QVERIFY(disk.load(path));
+        QStringList titles;
+        for (const auto &t : disk.tasks)
+            titles.append(t.title);
+        titles.sort();
+        QCOMPARE(titles, (QStringList{"From the phone", "From the window", "From the window again"}));
+        // Ids stay unique across the two writers.
+        QCOMPARE(disk.tasks[0].id + disk.tasks[1].id + disk.tasks[2].id, 6);
+    }
+
+    void httpParsesSplitRequests()
+    {
+        HttpRequestParser parser;
+        QCOMPARE(parser.feed("POST /api/task/3/done?view=to%20day HTTP/1.1\r\nHost: localhost\r\nContent-Le"),
+                 HttpRequestParser::Incomplete);
+        QCOMPARE(parser.feed("ngth: 5\r\nContent-Type: application/json\r\n\r\n{\"a\""), HttpRequestParser::Incomplete);
+        QCOMPARE(parser.feed(":1}"), HttpRequestParser::Complete);
+        const HttpRequest &request = parser.request();
+        QCOMPARE(request.method, QByteArray("POST"));
+        QCOMPARE(request.path, QString("/api/task/3/done"));
+        QCOMPARE(request.query.queryItemValue("view", QUrl::FullyDecoded), QString("to day"));
+        QCOMPARE(request.header("Content-Type"), QByteArray("application/json"));
+        QCOMPARE(request.body, QByteArray("{\"a\":"));
+    }
+
+    void httpRefusesBadRequests_data()
+    {
+        QTest::addColumn<QByteArray>("raw");
+        QTest::addColumn<int>("status");
+        QTest::newRow("garbage") << QByteArray("HELLO\r\n\r\n") << 400;
+        QTest::newRow("relative target") << QByteArray("GET index.html HTTP/1.1\r\n\r\n") << 400;
+        QTest::newRow("http2") << QByteArray("GET / HTTP/2.0\r\n\r\n") << 505;
+        QTest::newRow("too big") << QByteArray("POST / HTTP/1.1\r\nContent-Length: 70000\r\n\r\n") << 413;
+        QTest::newRow("chunked") << QByteArray("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n") << 501;
+        QTest::newRow("folded") << QByteArray("GET / HTTP/1.1\r\nHost: a\r\n  b\r\n\r\n") << 400;
+        QTest::newRow("two lengths") << QByteArray("POST / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\n") << 400;
+        QTest::newRow("bad length") << QByteArray("POST / HTTP/1.1\r\nContent-Length: -1\r\n\r\n") << 400;
+        QTest::newRow("huge head") << ("GET / HTTP/1.1\r\nX: " + QByteArray(20000, 'a')) << 431;
+    }
+
+    void httpRefusesBadRequests()
+    {
+        QFETCH(QByteArray, raw);
+        QFETCH(int, status);
+        HttpRequestParser parser;
+        QCOMPARE(parser.feed(raw), HttpRequestParser::Failed);
+        QCOMPARE(parser.errorStatus(), status);
+    }
+
+    void httpServerAnswersAndCloses()
+    {
+        HttpServer server([](const HttpRequest &request) {
+            return HttpResponse::json("{\"path\":\"" + request.path.toUtf8() + "\"}");
+        });
+        QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+        QTcpSocket socket;
+        socket.connectToHost(QHostAddress::LocalHost, server.port());
+        QVERIFY(socket.waitForConnected(2000));
+        socket.write("GET /hello HTTP/1.1\r\nHost: localhost\r\n");
+        socket.flush();
+        QTest::qWait(50);
+        socket.write("\r\n");
+        QByteArray reply;
+        QTRY_VERIFY_WITH_TIMEOUT((reply += socket.readAll(), socket.state() == QAbstractSocket::UnconnectedState), 3000);
+        reply += socket.readAll();
+        QVERIFY(reply.startsWith("HTTP/1.1 200 OK\r\n"));
+        QVERIFY(reply.contains("Connection: close\r\n"));
+        QVERIFY(reply.endsWith("{\"path\":\"/hello\"}"));
+    }
+
+    void webApiServesTheList()
+    {
+        QTemporaryDir dir;
+        Backend backend(dir.filePath("needful.json"));
+        backend.setToday(saturday);
+        const int home = backend.addContext("Home", 0);
+        const int mow = backend.saveTask({{"title", "Mow"}, {"contexts", QVariantList{home}}, {"priority", 3},
+                                          {"scheduleKind", "every"}, {"unit", "week"}});
+        WebApi api(&backend);
+
+        auto call = [&api](const QByteArray &method, const QString &path, const QByteArray &body = {},
+                           const QByteArray &host = "localhost:8787") {
+            HttpRequest request;
+            request.method = method;
+            const int question = path.indexOf('?');
+            request.path = question < 0 ? path : path.left(question);
+            if (question >= 0)
+                request.query = QUrlQuery(path.mid(question + 1));
+            request.headers.insert("host", host);
+            if (method == "POST")
+                request.headers.insert("content-type", "application/json");
+            request.body = body;
+            return api.handle(request);
+        };
+        auto json = [](const HttpResponse &response) { return QJsonDocument::fromJson(response.body).object(); };
+
+        HttpResponse state = call("GET", "/api/state?view=needful");
+        QCOMPARE(state.status, 200);
+        QCOMPARE(json(state).value("items").toArray().size(), 1);
+        QCOMPARE(json(state).value("accent").toString(), QString("#FFD60A"));
+        bool hasPolicy = false;
+        for (const auto &header : state.headers)
+            hasPolicy |= header.first == "Content-Security-Policy" && header.second.contains("script-src 'self'") &&
+                         !header.second.contains("unsafe-inline");
+        QVERIFY(hasPolicy);
+
+        QCOMPARE(call("POST", QString("/api/task/%1/today").arg(mow)).status, 200);
+        QCOMPARE(json(call("GET", "/api/state?view=today")).value("items").toArray().size(), 1);
+        QCOMPARE(call("POST", QString("/api/task/%1/snooze").arg(mow), "{\"days\":3}").status, 200);
+        QCOMPARE(backend.store().task(mow)->snoozedUntil, saturday.addDays(3));
+        QCOMPARE(call("POST", QString("/api/task/%1/snooze").arg(mow), "{\"days\":0}").status, 400);
+        QCOMPARE(call("POST", QString("/api/task/%1/unsnooze").arg(mow)).status, 200);
+        QCOMPARE(call("POST", QString("/api/task/%1/done").arg(mow), "{\"note\":\"Edged too\"}").status, 200);
+        QCOMPARE(backend.store().history(mow).first().note, QString("Edged too"));
+        QCOMPARE(json(call("GET", QString("/api/task/%1").arg(mow))).value("history").toArray().size(), 1);
+
+        const HttpResponse added = call("POST", "/api/tasks", "{\"title\":\"Wash the car\",\"contexts\":[" +
+                                                                  QByteArray::number(home) + "],\"priority\":4}");
+        QCOMPARE(added.status, 201);
+        const int washed = json(added).value("id").toInt();
+        QCOMPARE(backend.store().task(washed)->schedule.kind, Schedule::Once);
+        QCOMPARE(backend.store().task(washed)->context, home);
+        QCOMPARE(call("POST", "/api/tasks", "{\"title\":\"\"}").status, 400);
+
+        QCOMPARE(call("POST", "/api/log", "{\"context\":1,\"text\":\"Squeak\",\"followUp\":true}").status, 201);
+        QCOMPARE(call("POST", "/api/log", "{\"text\":\"  \"}").status, 400);
+        QCOMPARE(call("POST", "/api/task/999/done", "{}").status, 404);
+        QCOMPARE(call("GET", "/api/task/999").status, 404);
+        QCOMPARE(call("POST", "/api/tasks", "not json").status, 400);
+        QCOMPARE(call("DELETE", "/api/tasks").status, 405);
+
+        HttpRequest form;
+        form.method = "POST";
+        form.path = "/api/tasks";
+        form.headers.insert("content-type", "application/x-www-form-urlencoded");
+        form.body = "title=x";
+        QCOMPARE(api.handle(form).status, 415);
+
+        QCOMPARE(call("GET", "/api/state", {}, "evil.example.com").status, 403);
+        QCOMPARE(call("GET", "/api/state", {}, "needful.tail1234.ts.net").status, 200);
+        QCOMPARE(call("GET", "/api/state", {}, "[::1]:8787").status, 200);
+        QCOMPARE(call("GET", "/api/state", {}, "192.168.1.20:8787").status, 200);
+    }
+
+    void webApiServesThePage_data()
+    {
+        QTest::addColumn<QString>("path");
+        QTest::addColumn<QByteArray>("type");
+        QTest::newRow("root") << "/" << QByteArray("text/html; charset=utf-8");
+        QTest::newRow("script") << "/app.js" << QByteArray("text/javascript; charset=utf-8");
+        QTest::newRow("worker") << "/sw.js" << QByteArray("text/javascript; charset=utf-8");
+        QTest::newRow("styles") << "/style.css" << QByteArray("text/css; charset=utf-8");
+        QTest::newRow("manifest") << "/manifest.webmanifest" << QByteArray("application/manifest+json");
+        QTest::newRow("icon") << "/icon-192.png" << QByteArray("image/png");
+        QTest::newRow("svg") << "/icon.svg" << QByteArray("image/svg+xml");
+    }
+
+    void webApiServesThePage()
+    {
+        QFETCH(QString, path);
+        QFETCH(QByteArray, type);
+        QTemporaryDir dir;
+        Backend backend(dir.filePath("needful.json"));
+        WebApi api(&backend);
+        HttpRequest request;
+        request.method = "GET";
+        request.path = path;
+        const HttpResponse response = api.handle(request);
+        QCOMPARE(response.status, 200);
+        QCOMPARE(response.contentType, type);
+        QVERIFY(!response.body.isEmpty());
+        // No inline script anywhere in the page.
+        if (path == "/") {
+            QVERIFY(!response.body.contains("<script>"));
+            QVERIFY(!response.body.contains(" on"));
+        }
+    }
+
+    void webApiKeepsToItsFolder()
+    {
+        QTemporaryDir dir;
+        Backend backend(dir.filePath("needful.json"));
+        WebApi api(&backend);
+        for (const QString path : {"/../resources.qrc", "/missing.js", "/web/app.js", "/.hidden"}) {
+            HttpRequest request;
+            request.method = "GET";
+            request.path = path;
+            QCOMPARE(api.handle(request).status, 404);
+        }
+    }
+
+    void serviceUnitsAreWritten()
+    {
+        ServeSetup setup;
+        setup.needful = "/usr/bin/needful";
+        setup.port = 9000;
+        setup.data = "/home/me/My Data/50% done.json";
+        setup.tailscale = true;
+        setup.tailscaled = "/usr/bin/tailscaled";
+        setup.stateDir = "/home/me/.local/share/needful/tailscale";
+        const auto units = serviceUnits(setup);
+        QCOMPARE(units.keys(), (QStringList{"needful-serve.service", "needful-tailscale.service"}));
+        QVERIFY(units["needful-serve.service"].contains(
+            "ExecStart=/usr/bin/needful serve --port 9000 --data \"/home/me/My Data/50%% done.json\"\n"));
+        QVERIFY(units["needful-serve.service"].contains("WantedBy=default.target"));
+        QVERIFY(units["needful-tailscale.service"].contains(
+            "ExecStart=/usr/bin/tailscaled --tun=userspace-networking "
+            "--statedir=/home/me/.local/share/needful/tailscale --socket=%t/needful-tailscaled.sock --port=0\n"));
+        setup.tailscale = false;
+        QCOMPARE(serviceUnits(setup).size(), 1);
+    }
+
+    void serveInstallWritesIntoTheConfigFolder()
+    {
+        QTemporaryDir dir;
+        const QByteArray oldConfig = qgetenv("XDG_CONFIG_HOME"), oldData = qgetenv("XDG_DATA_HOME");
+        qputenv("XDG_CONFIG_HOME", dir.filePath("config").toUtf8());
+        qputenv("XDG_DATA_HOME", dir.filePath("data").toUtf8());
+        const int result = runServe({"needful", "serve", "install", "--port", "8899"});
+        const QString unit = dir.filePath("config/systemd/user/needful-serve.service");
+        const bool written = QFile::exists(unit);
+        QFile file(unit);
+        file.open(QIODevice::ReadOnly);
+        const QByteArray contents = file.readAll();
+        auto restore = [](const char *name, const QByteArray &value) {
+            if (value.isEmpty()) qunsetenv(name); else qputenv(name, value);
+        };
+        restore("XDG_CONFIG_HOME", oldConfig);
+        restore("XDG_DATA_HOME", oldData);
+        QCOMPARE(result, 0);
+        QVERIFY(written);
+        QVERIFY(contents.contains(" serve --port 8899\n"));
     }
 
     void themeFallsBack()
