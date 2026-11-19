@@ -14,9 +14,11 @@
 #include <QSaveFile>
 #include <QStandardPaths>
 #include <cstdio>
+#include <cstdlib>
 
 #include "backend.h"
 #include "serve.h"
+#include "universes.h"
 
 namespace {
 void print(FILE *stream, const QString &text) { fprintf(stream, "%s\n", qPrintable(text)); }
@@ -36,12 +38,23 @@ struct Command {
         parser.addHelpOption();
         parser.addPositionalArgument(name, description, name);
         parser.addOption({"data", "Use this data file instead of the usual one", "path"});
+        parser.addOption({"universe", "Use another universe's list, like hers (see: needful universe)", "name"});
     }
     void json() { parser.addOption({"json", "Print the result as JSON"}); }
     void context() { parser.addOption({"context", "A context by name or path, like \"Automotive/White Honda CR-V\"", "context"}); }
     bool wantsJson() const { return parser.isSet("json"); }
     QString argument(int index) const { return parser.positionalArguments().value(index); }
-    QString dataPath() const { return parser.value("data"); }
+    // --data, or the universe named, or empty for the usual file.
+    QString dataPath() const {
+        if (parser.isSet("data") || !parser.isSet("universe"))
+            return parser.value("data");
+        const QString path = Universes().dataPath(parser.value("universe"));
+        if (path.isEmpty()) {
+            print(stderr, QString("No universe named %1. See: needful universe").arg(parser.value("universe")));
+            std::exit(1);
+        }
+        return path;
+    }
 };
 
 // A context option, or 0 for none; -1 with a message when it names nothing.
@@ -641,6 +654,86 @@ int sync(const QStringList &arguments) {
                 "or sync rsync install <host>.");
 }
 
+int universe(const QStringList &arguments) {
+    Command command("universe", "List universes, or add or remove one. A universe is a separate list, like "
+                                "someone else's, that you open with --universe or from the window's switcher.");
+    command.parser.addPositionalArgument("action", "add <name> [<folder>], or remove <name>", "[action]");
+    command.parser.addOption({"name", "With add and a folder: what to call this machine in that universe", "name"});
+    command.json();
+    command.parser.process(arguments);
+    const QString action = command.argument(1), name = command.argument(2).trimmed().toLower();
+    Universes universes;
+    QString error;
+
+    if (action == "add") {
+        if (name.isEmpty())
+            return fail("Name it: needful universe add hers ~/Sync/needful-hers");
+        const bool known = !universes.dataPath(name).isEmpty();
+        const QString path = universes.add(name, &error);
+        if (path.isEmpty())
+            return fail(error);
+        const QString folder = command.argument(3);
+        if (!folder.isEmpty()) {
+            SyncFolder::Setup result;
+            if (!SyncFolder::setup(path, folder, command.parser.value("name"), QDateTime::currentDateTime(), &result,
+                                   &error, path)) {
+                if (!known)
+                    universes.remove(name, nullptr);
+                return fail(error);
+            }
+            const QString where = shortPath(QDir::cleanPath(QFileInfo(folder).absoluteFilePath()));
+            if (result.already)
+                print(stdout, QString("%1 already syncs with %2.").arg(name, where));
+            else if (result.joined)
+                print(stdout, QString("Added %1, joined %2 (from %3). This machine is \"%4\" there.")
+                                  .arg(name, where, result.others.join(", "), result.name));
+            else
+                print(stdout, QString("Added %1, syncing through %2. This machine is \"%3\" there.")
+                                  .arg(name, where, result.name));
+        } else {
+            print(stdout, known ? QString("%1 is already here.").arg(name)
+                                : QString("Added %1, a list kept only on this computer.").arg(name));
+        }
+        print(stdout, QString("Open it with: needful open --universe %1, or U in the window.").arg(name));
+        return 0;
+    }
+    if (action == "remove") {
+        const QString path = universes.dataPath(name);
+        if (!universes.remove(name, &error))
+            return fail(error);
+        print(stdout, QString("Removed %1 from this computer. Its data stays in %2%3.")
+                          .arg(name, shortPath(path),
+                               SyncFolder::readPointer([&] {
+                                   QFile file(path);
+                                   return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+                               }(), nullptr) ? " and its sync folder" : ""));
+        return 0;
+    }
+    if (!action.isEmpty())
+        return fail("Use needful universe, universe add <name> [<folder>], or universe remove <name>.");
+
+    QJsonArray array;
+    int width = 4;
+    for (const Universe &u : universes.list())
+        width = std::max(width, int(u.name.size()));
+    for (const Universe &u : universes.list()) {
+        QString folder;
+        if (QFile file(u.dataPath); file.open(QIODevice::ReadOnly)) {
+            SyncFolder::Pointer pointer;
+            if (SyncFolder::readPointer(file.readAll(), &pointer))
+                folder = pointer.folder;
+        }
+        array.append(QJsonObject{{"name", u.name}, {"data", u.dataPath},
+                                 {"folder", folder.isEmpty() ? QJsonValue::Null : QJsonValue(folder)}});
+        if (!command.wantsJson())
+            print(stdout, u.name.leftJustified(width + 2) +
+                              (folder.isEmpty() ? shortPath(u.dataPath) : shortPath(folder) + "  (synced)"));
+    }
+    if (command.wantsJson())
+        printJson(array);
+    return 0;
+}
+
 int help(const QStringList &arguments) {
     const QString topic = arguments.value(2);
     if (isCliCommand(topic) && topic != "help")
@@ -663,6 +756,11 @@ QString cliSummary() {
            "  history [--context C]            What was done and noted, newest first\n"
            "  contexts [add <path>]            List or add contexts\n"
            "  skill [install]                  Print the skill for coding agents, or install it\n\n"
+           "Other lists (needful help universe):\n"
+           "  universe                         List universes: yours, and others you can open\n"
+           "  universe add <name> [<folder>]   Add one, like someone else's, syncing through its folder\n"
+           "  universe remove <name>           Stop listing it on this computer\n"
+           "  --universe <name>                Any command, or open, on that universe\n\n"
            "Your other computers (needful help sync):\n"
            "  sync setup <folder>              Keep this machine in step through a synced folder\n"
            "  sync status                      When each machine's changes were last seen\n"
@@ -679,7 +777,7 @@ QString cliSummary() {
 }
 
 bool isCliCommand(const QString &word) {
-    return QStringList{"list", "add", "done", "snooze", "today", "log", "history", "contexts", "skill", "serve", "sync",
+    return QStringList{"list", "add", "done", "snooze", "today", "log", "history", "contexts", "skill", "serve", "sync", "universe",
                        "help", "--help", "-h", "--version", "-v"}
         .contains(word);
 }
@@ -701,5 +799,6 @@ int runCli(const QStringList &arguments) {
            : command == "skill"    ? skill(arguments)
            : command == "serve"    ? runServe(arguments)
            : command == "sync"     ? sync(arguments)
+           : command == "universe" ? universe(arguments)
                                    : help(arguments);
 }

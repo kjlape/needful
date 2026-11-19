@@ -17,6 +17,7 @@ no display, takes `--json`, exits 0 or 1, and writes errors to stderr.
 - `needful log "Squeak from the front left at low speed" --context CR-V [--follow-up] [--priority high] [--due 2026-05-01]` notes something on a context; `--follow-up` also adds a one-time task to deal with it.
 - `needful history [--context C] [--task id] [--search oil] --json` answers "when did I last…"; it interleaves completions (`"kind": "completion"`) with notes (`"kind": "log"`).
 - `needful contexts [add "Parent/Child"] --json`
+- Every command takes `--universe <name>` for another list on this computer, such as a partner's or the house's (`needful universe --json` lists them). Without it, commands use the person's own list; only use another universe when asked about it.
 - `needful sync status --json` says whether this machine syncs with the person's other computers, and when each was last heard from. Commands work the same either way. Leave `sync setup`, `sync rename`, `sync forget`, and `sync rsync` to the person.
 - `needful serve status --json` says whether the phone page is being served, and its tailnet URL. Leave `serve install`, `serve login`, and `serve uninstall` to the person: they change systemd and Tailscale.
 

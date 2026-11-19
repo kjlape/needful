@@ -15,6 +15,7 @@ HEADERS += \
     src/sync.h \
     src/theme.h \
     src/translator.h \
+    src/universes.h \
     src/webapi.h
 
 SOURCES += \
@@ -27,6 +28,7 @@ SOURCES += \
     src/sync.cpp \
     src/theme.cpp \
     src/translator.cpp \
+    src/universes.cpp \
     src/webapi.cpp
 
 RESOURCES += src/resources.qrc src/web/web.qrc

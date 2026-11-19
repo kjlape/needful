@@ -63,7 +63,40 @@ Rectangle {
             font.bold: true
             color: theme.accent
             Layout.leftMargin: 16
-            Layout.bottomMargin: 14
+            Layout.bottomMargin: backend.universes.length > 1 ? 8 : 14
+        }
+
+        // Other universes, one click (or U) away; yours is where it starts.
+        Flow {
+            visible: backend.universes.length > 1
+            Layout.fillWidth: true
+            Layout.leftMargin: 12
+            Layout.rightMargin: 8
+            Layout.bottomMargin: 12
+            spacing: 4
+            Repeater {
+                model: backend.universes
+                AbstractButton {
+                    id: pill
+                    required property var modelData
+                    padding: 4
+                    leftPadding: 9
+                    rightPadding: 9
+                    hoverEnabled: true
+                    onClicked: backend.openUniverse(modelData.name)
+                    background: Rectangle {
+                        radius: Math.min(10, theme.radius + 6)
+                        color: pill.modelData.open ? theme.accent
+                               : pill.hovered ? Qt.rgba(1, 1, 1, 0.08) : Qt.rgba(1, 1, 1, 0.04)
+                    }
+                    contentItem: Label {
+                        text: pill.modelData.label
+                        font.pixelSize: 12
+                        font.bold: pill.modelData.open
+                        color: pill.modelData.open ? theme.accentForeground : "#c4c4cc"
+                    }
+                }
+            }
         }
 
         Repeater {

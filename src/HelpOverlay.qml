@@ -21,6 +21,7 @@ Rectangle {
         ["1 – 4", qsTr("Today, Needful, Upcoming, History")],
         ["[ / ]", qsTr("Previous / next context")],
         ["0", qsTr("Every context")],
+        ["U", qsTr("Next universe: yours, then others you've added")],
         ["C", qsTr("New context inside this one")],
         ["Shift+C", qsTr("New top-level context")],
         ["/", qsTr("Search")],

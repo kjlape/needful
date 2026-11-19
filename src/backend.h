@@ -24,7 +24,11 @@ class Backend : public QObject {
     Q_PROPERTY(QVariantMap counts READ counts NOTIFY changed)
     Q_PROPERTY(QString todayText READ todayText NOTIFY changed)
     Q_PROPERTY(QString error READ error NOTIFY errorChanged)
-    Q_PROPERTY(QString dataPath READ dataPath CONSTANT)
+    Q_PROPERTY(QString dataPath READ dataPath NOTIFY universeChanged)
+    // Which universe is open (mine, hers, house), and all of them, as
+    // {name, label, open} for the switcher. The window always starts on mine.
+    Q_PROPERTY(QString universe READ universe NOTIFY universeChanged)
+    Q_PROPERTY(QVariantList universes READ universes NOTIFY universeChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY changed)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY changed)
     // For a synced machine, when the others were last heard from; empty when
@@ -53,6 +57,11 @@ public:
     QString todayText() const;
     QString error() const { return m_error; }
     QString dataPath() const { return m_path; }
+    QString universe() const { return m_universe; }
+    QVariantList universes() const { return m_universes; }
+    // Switches the window to another universe's list, starting fresh on it:
+    // every context, no search, and nothing to undo.
+    Q_INVOKABLE void openUniverse(const QString &name);
     bool canUndo() const { return !m_undo.isEmpty(); }
     bool canRedo() const { return !m_redo.isEmpty(); }
     QString syncText() const { return m_syncText; }
@@ -101,11 +110,13 @@ signals:
     void changed();
     void errorChanged();
     void syncChanged();
+    void universeChanged();
 
 private:
     template <typename Change> bool change(Change apply);
     void restore(const QByteArray &json);
     bool persist(QString *message);
+    void loadUniverses();
     void updateSync();
     void reloadFromDisk();
     enum CatchUp { Current, CaughtUp, Unreadable };
@@ -132,7 +143,8 @@ private:
     QVariantMap m_counts;
     QString m_error;
     std::unique_ptr<SyncFolder> m_sync;
-    QString m_syncText;
+    QString m_syncText, m_universe;
+    QVariantList m_universes;
     bool m_syncLate = false;
     QList<QByteArray> m_undo, m_redo;
     QByteArray m_written;

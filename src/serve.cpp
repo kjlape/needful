@@ -23,6 +23,7 @@
 #include "backend.h"
 #include "httpserver.h"
 #include "theme.h"
+#include "universes.h"
 #include "webapi.h"
 
 namespace {
@@ -30,6 +31,17 @@ void print(FILE *stream, const QString &text) { fprintf(stream, "%s\n", qPrintab
 int fail(const QString &message) {
     print(stderr, message);
     return 1;
+}
+
+// --data, or the --universe named; false with a message for an unknown one.
+bool dataOption(const QCommandLineParser &parser, QString *path) {
+    *path = parser.value("data");
+    if (parser.isSet("data") || !parser.isSet("universe"))
+        return true;
+    *path = Universes().dataPath(parser.value("universe"));
+    if (path->isEmpty())
+        print(stderr, QString("No universe named %1. See: needful universe").arg(parser.value("universe")));
+    return !path->isEmpty();
 }
 
 const QString ServeUnit = "needful-serve.service";
@@ -140,6 +152,7 @@ int serve(const QStringList &arguments) {
     parser.addOption({"port", QString("Port to listen on (%1)").arg(DefaultServePort), "port"});
     parser.addOption({"host", "Address to listen on (127.0.0.1)", "address", "127.0.0.1"});
     parser.addOption({"data", "Use this data file instead of the usual one", "path"});
+    parser.addOption({"universe", "Serve another universe's list, like hers", "name"});
     parser.process(arguments);
     if (parser.positionalArguments().size() > 1)
         return fail("Unknown serve command " + parser.positionalArguments().value(1) +
@@ -151,7 +164,10 @@ int serve(const QStringList &arguments) {
     if (host.isNull())
         return fail("--host takes an IP address, like 127.0.0.1.");
 
-    Backend backend(parser.value("data"));
+    QString data;
+    if (!dataOption(parser, &data))
+        return 1;
+    Backend backend(data);
     if (!backend.error().isEmpty())
         return fail(backend.error());
     // An explicit theme folder keeps the daemon from polling hyprctl.
@@ -178,6 +194,7 @@ int install(const QStringList &arguments) {
     parser.addPositionalArgument("serve install", "", "serve install");
     parser.addOption({"port", QString("Port for the page (%1)").arg(DefaultServePort), "port"});
     parser.addOption({"data", "Serve this data file instead of the usual one", "path"});
+    parser.addOption({"universe", "Serve another universe's list instead of yours, like hers", "name"});
     parser.addOption({"tailscale", "Also run a Tailscale node named needful, for https://needful.<tailnet>.ts.net"});
     parser.process(arguments);
     int port = DefaultServePort;
@@ -187,7 +204,10 @@ int install(const QStringList &arguments) {
     ServeSetup setup;
     setup.needful = QCoreApplication::applicationFilePath();
     setup.port = port;
-    setup.data = parser.isSet("data") ? QFileInfo(parser.value("data")).absoluteFilePath() : QString();
+    QString data;
+    if (!dataOption(parser, &data))
+        return 1;
+    setup.data = data.isEmpty() ? QString() : QFileInfo(data).absoluteFilePath();
     setup.tailscale = parser.isSet("tailscale");
     if (setup.tailscale) {
         setup.tailscaled = QStandardPaths::findExecutable("tailscaled");

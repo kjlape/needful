@@ -1,4 +1,5 @@
 #include "backend.h"
+#include "universes.h"
 
 #include <QDir>
 #include <QFile>
@@ -36,6 +37,7 @@ QString stateName(Store::State state) {
 Backend::Backend(const QString &dataPath, QObject *parent)
     : QObject(parent), m_path(dataPath.isEmpty() ? defaultDataPath() : dataPath) {
     catchUp();
+    loadUniverses();
 
     // The command line, or another machine syncing the folder, can change the
     // file while the window is open; pick that up rather than overwrite it.
@@ -78,11 +80,49 @@ void Backend::watch() {
     // brings their files into the folder.
     if (m_sync && !m_sync->watchPaths().isEmpty())
         m_watcher.addPaths(m_sync->watchPaths());
+    // Universes added from the command line show up in the switcher.
+    const QString registry = QFileInfo(Universes().registryPath()).absolutePath();
+    if (QFileInfo(registry).isDir() && !m_watcher.directories().contains(registry))
+        m_watcher.addPath(registry);
+}
+
+void Backend::loadUniverses() {
+    const Universes known;
+    const QString name = known.nameOf(m_path);
+    QVariantList list;
+    for (const Universe &u : known.list())
+        list.append(QVariantMap{{"name", u.name}, {"label", u.label()}, {"open", u.name == name}});
+    if (name == m_universe && list == m_universes)
+        return;
+    m_universe = name;
+    m_universes = list;
+    emit universeChanged();
+}
+
+void Backend::openUniverse(const QString &name) {
+    const QString path = Universes().dataPath(name);
+    if (path.isEmpty() || QFileInfo(path).absoluteFilePath() == QFileInfo(m_path).absoluteFilePath())
+        return;
+    m_path = path;
+    m_store = Store();
+    m_written.clear();
+    m_undo.clear();
+    m_redo.clear();
+    m_sync.reset();
+    m_contextFilter = 0;
+    m_search.clear();
+    setError({});
+    catchUp();
+    watch();
+    loadUniverses();
+    emit viewChanged();
+    refresh();
 }
 
 void Backend::reloadFromDisk() {
     const CatchUp caught = catchUp();
     watch();
+    loadUniverses();
     if (caught == CaughtUp)
         refresh();
     else

@@ -81,6 +81,14 @@ ApplicationWindow {
         backend.contextFilter = ids[(at + step + ids.length) % ids.length]
     }
 
+    function cycleUniverse() {
+        const names = backend.universes.map(u => u.name)
+        if (names.length < 2)
+            return
+        const at = Math.max(0, names.indexOf(backend.universe))
+        backend.openUniverse(names[(at + 1) % names.length])
+    }
+
     function newTask() { editor.openFor({ context: backend.contextFilter }) }
     function editSelected() { if (hasSelection) editor.openFor(selected) }
     function completeSelected() { if (hasSelection) completeDialog.openFor(selected) }
@@ -120,6 +128,7 @@ ApplicationWindow {
     Shortcut { sequence: "]"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: win.cycleContext(1) }
     Shortcut { sequence: "["; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: win.cycleContext(-1) }
     Shortcut { sequence: "0"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: backend.contextFilter = 0 }
+    Shortcut { sequence: "U"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: win.cycleUniverse() }
     Shortcut { sequence: "L"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: logDialog.openFor(backend.contextFilter) }
     Shortcut { sequence: "C"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: contextDialog.openForNew(backend.contextFilter) }
     Shortcut { sequence: "Shift+C"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: contextDialog.openForNew(0) }

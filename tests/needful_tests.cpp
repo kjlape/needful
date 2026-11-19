@@ -17,6 +17,8 @@
 #include "sync.h"
 #include "theme.h"
 #include "translator.h"
+#include "universes.h"
+#include "cli.h"
 #include "webapi.h"
 
 namespace {
@@ -746,6 +748,72 @@ private slots:
         QCOMPARE(contentsOf(folder + "/machines/" + pointer.machine + ".json"), before);
         QVERIFY(!SyncFolder::setup(copied, folder, {}, noon, &setup, &error));
         QVERIFY(error.contains("another computer"));
+    }
+
+    // Her list and yours on one computer: yours by default, hers when asked.
+    void universesKeepListsApart()
+    {
+        QTemporaryDir dir;
+        const QByteArray oldData = qgetenv("NEEDFUL_DATA");
+        qputenv("NEEDFUL_DATA", dir.filePath("needful.json").toUtf8());
+        auto restore = qScopeGuard([&] {
+            if (oldData.isEmpty()) qunsetenv("NEEDFUL_DATA"); else qputenv("NEEDFUL_DATA", oldData);
+        });
+
+        Universes universes;
+        QCOMPARE(universes.list().size(), 1);
+        QCOMPARE(universes.list().first().name, QString("mine"));
+        QCOMPARE(universes.list().first().label(), QString("Mine"));
+        QString error;
+        QVERIFY(universes.add("Hers", &error).isEmpty());
+        QVERIFY(universes.add("mine", &error).isEmpty());
+        const QString hers = universes.add("hers", &error);
+        QCOMPARE(hers, dir.filePath("universes/hers.json"));
+        QCOMPARE(universes.add("hers", &error), hers); // Adding again is harmless.
+        QCOMPARE(universes.nameOf(dir.filePath("needful.json")), QString("mine"));
+        QCOMPARE(universes.nameOf(hers), QString("hers"));
+
+        {
+            Backend her(hers);
+            her.setToday(saturday);
+            her.saveTask({{"title", "Water the ferns"}});
+        }
+        Backend window;
+        window.setToday(saturday);
+        window.saveTask({{"title", "Oil change"}});
+        const int home = window.addContext("Garage", 0);
+        window.setContextFilter(home);
+        QCOMPARE(window.universe(), QString("mine"));
+        QCOMPARE(window.universes().size(), 2);
+        QVERIFY(window.canUndo());
+
+        window.openUniverse("hers");
+        QCOMPARE(window.universe(), QString("hers"));
+        QCOMPARE(window.dataPath(), hers);
+        QCOMPARE(titles(window.store()), QStringList{"Water the ferns"});
+        QCOMPARE(window.contextFilter(), 0);
+        QVERIFY(!window.canUndo());
+        QVERIFY(window.universes()[1].toMap()["open"].toBool());
+        window.saveTask({{"title", "Repot the fig"}});
+        window.openUniverse("nobody");
+        QCOMPARE(window.universe(), QString("hers"));
+        window.openUniverse("mine");
+        QCOMPARE(titles(window.store()), QStringList{"Oil change"});
+        QCOMPARE(titles(Backend(hers).store()), (QStringList{"Repot the fig", "Water the ferns"}));
+
+        // The command line takes --universe, and joins her synced folder.
+        QCOMPARE(runCli({"needful", "add", "Prune the roses", "--universe", "hers"}), 0);
+        QCOMPARE(titles(Backend(hers).store()).size(), 3);
+        QCOMPARE(runCli({"needful", "universe", "add", "house", dir.filePath("house-sync"), "--name", "kitchen"}), 0);
+        SyncFolder::Pointer pointer;
+        QVERIFY(SyncFolder::readPointer(contentsOf(dir.filePath("universes/house.json")), &pointer));
+        QCOMPARE(QDir::cleanPath(pointer.folder), QDir::cleanPath(dir.filePath("house-sync")));
+        QTRY_COMPARE(window.universes().size(), 3); // The switcher hears of it.
+
+        QVERIFY(universes.remove("hers", &error));
+        QVERIFY(!universes.remove("mine", &error));
+        QVERIFY(QFile::exists(hers)); // Her list stays; it's just not listed here.
+        QCOMPARE(universes.list().size(), 2);
     }
 
     void httpParsesSplitRequests()

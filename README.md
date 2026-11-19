@@ -45,6 +45,7 @@ one is. Pick from the top, and trust that nothing is forgotten.
 | `1` – `4` | Today, Needful, Upcoming, History |
 | `[` / `]` | Previous / next context |
 | `0` | Every context |
+| `U` | Next universe |
 | `C` | New context inside the current one |
 | `Shift+C` | New top-level context |
 | `/` | Search |
@@ -121,6 +122,27 @@ The data file itself has to stay on its own computer. If yours is in a
 shared folder (the old way of syncing), setup says so and asks you to move
 it first, and a data file that a sync tool copied from another computer is
 refused rather than used.
+
+## Other people's lists
+
+A universe is a separate list on the same computer: your partner's, or one
+for the house. Yours is always there and is what everything opens on;
+others are one click away in the sidebar (or `U`), so their chores never
+mix into your day.
+
+```sh
+needful universe add hers ~/Sync/needful-hers   # join her synced folder
+needful universe add house ~/Sync/needful-house
+needful universe add scratch                     # a list kept only on this computer
+needful universe                                 # mine, hers, house, scratch
+needful list --universe hers                     # any command takes --universe
+needful open --universe hers
+needful universe remove scratch                  # stops listing it; its data stays
+```
+
+Each universe syncs through its own folder, the same way as your own, and
+this computer joins it as one more machine. There are no permissions inside
+a universe: anyone who has joined it can change anything in it.
 
 ## On your phone
 

@@ -12,6 +12,7 @@
 #include "cli.h"
 #include "theme.h"
 #include "translator.h"
+#include "universes.h"
 
 int main(int argc, char *argv[]) {
     // Bare needful prints help, as a command line tool should; the launcher
@@ -46,8 +47,26 @@ int main(int argc, char *argv[]) {
 
     QQuickStyle::setStyle("Material");
 
+    // The window opens on your own list unless asked for another universe.
+    QString dataPath;
+    const QStringList arguments = app.arguments();
+    for (int i = 2; i < arguments.size(); ++i) {
+        QString name;
+        if (arguments[i] == "--universe" && i + 1 < arguments.size())
+            name = arguments[i + 1];
+        else if (arguments[i].startsWith("--universe="))
+            name = arguments[i].mid(11);
+        if (name.isEmpty())
+            continue;
+        dataPath = Universes().dataPath(name);
+        if (dataPath.isEmpty()) {
+            fprintf(stderr, "No universe named %s. See: needful universe\n", qPrintable(name));
+            return 1;
+        }
+    }
+
     Theme theme;
-    Backend backend;
+    Backend backend(dataPath);
 
     QQmlApplicationEngine engine;
     QObject::connect(&translator, &Translator::changed, &engine, &QQmlEngine::retranslate);
