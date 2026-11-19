@@ -198,6 +198,40 @@ Needful is C++ and Qt Quick with no platform-specific dependencies: no D-Bus,
 no portals, and the Omarchy theme and language are followed when present and
 fall back cleanly when not, which keeps Flatpak and macOS builds open.
 
+### macOS
+
+You need Xcode's command line tools, Qt 6 (the [online
+installer](https://www.qt.io/download-qt-installer-oss) puts it in
+`~/Qt/<version>/macos`, and the script finds it there), and librsvg for the
+icon (`brew install librsvg`). Then:
+
+```sh
+bin/build-macos
+```
+
+That builds `build/macos/Needful.app` and `build/macos/Needful-<version>.dmg`,
+with the app icon, the Qt frameworks bundled, and an ad hoc signature. Open the
+dmg and drag Needful to Applications. It isn't notarized, so on another Mac
+the first launch needs right-click, then Open.
+
+Double-clicking opens the window. The command line is the same program:
+
+```sh
+/Applications/Needful.app/Contents/MacOS/needful list
+sudo ln -s /Applications/Needful.app/Contents/MacOS/needful /usr/local/bin/needful   # optional
+```
+
+`bin/build` and `bin/install` are for Linux. To run the tests on a Mac:
+
+```sh
+mkdir -p build/tests && cd build/tests
+qmake6 ../../tests/needful_tests.pro && make -j"$(sysctl -n hw.ncpu)"
+QT_QPA_PLATFORM=offscreen ./needful_tests.app/Contents/MacOS/needful_tests
+```
+
+How the package is put together, and how Linux services map to launchd, is in
+[docs/building-for-macos.md](docs/building-for-macos.md).
+
 ## Next
 
 - Meter triggers: log a vehicle's odometer, and the oil change falls due at a
