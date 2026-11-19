@@ -31,7 +31,7 @@ private:
     HttpResponse state(const HttpRequest &request);
     HttpResponse taskAction(int id, const QString &action, const QVariantMap &body);
     HttpResponse addTask(const QVariantMap &body);
-    // TODO(merge): wire to Backend::addLog once the context log lands.
+    // A note on a context, through Backend::addLog.
     HttpResponse addLog(const QVariantMap &body);
     QJsonObject taskJson(int id) const;
 
