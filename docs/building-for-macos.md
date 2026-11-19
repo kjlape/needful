@@ -76,6 +76,56 @@ Only the bundle and display name are capitalized. The executable inside stays
 (`~/Library/Application Support/needful`) and the command do not change and
 existing data keeps working.
 
+## Background services
+
+Anything an Omarchy app installs as a systemd user unit (a server, a sync
+timer, a helper daemon) becomes a launchd agent on macOS. Needful's
+`serve install` and `sync rsync install` are the worked examples.
+
+- **Where:** a plist at `~/Library/LaunchAgents/<label>.plist`. Name the label
+  after the bundle id plus the job (`faithbibleinstitute.needful.serve`), and
+  the file after the label.
+- **Long-running job:** `RunAtLoad` and `KeepAlive` true, with
+  `ThrottleInterval` (5) to match systemd's `RestartSec`. That replaces
+  `Restart=on-failure` and `WantedBy=default.target`.
+- **Timer:** there is no timer unit. Use one job with `StartInterval` in
+  seconds and `RunAtLoad`, and no `KeepAlive`. Convert `5m` or `1h` yourself.
+  Two commands that systemd runs as two `ExecStart=` lines become one
+  `/bin/sh -c 'first && second'`, with every word shell-quoted.
+- **No enable step:** load the file yourself, from the install command, with
+  `launchctl bootout gui/$UID/<label>` (ignore failure) then
+  `launchctl bootstrap gui/$UID <file>`. The bootout makes reinstalling work.
+  A loaded agent starts now and at every login. Uninstall is `bootout` and
+  deleting the file. `launchctl kickstart gui/$UID/<label>` starts it by hand.
+- **XML:** escape `&`, `<` and `>` in every argument. A `&&` in a shell line
+  must be written `&amp;&amp;`.
+- **Logs:** launchd has no journal. Point `StandardOutPath` and
+  `StandardErrorPath` at `~/Library/Logs/<app>-<job>.log`, and create that
+  folder if needed.
+- **The binary path is baked in.** The plist holds the executable's absolute
+  path, so install from `/Applications/Needful.app/Contents/MacOS/needful`,
+  not from a build folder, and rerun the install if the app moves.
+- **No `%t` runtime folder.** Unix socket paths have no per-user runtime
+  directory, so keep them under the app's data folder, and mind the 104
+  character limit on a socket path.
+- **launchd's `PATH` is minimal** (`/usr/bin:/bin:/usr/sbin:/sbin`), without
+  Homebrew. Give absolute paths to anything you call, or the job will not
+  find it. ssh works with a key that needs no prompt; launchd passes the
+  login session's ssh agent.
+- **Tests must never load real agents.** An install test that runs on macOS
+  will otherwise load agents into the developer's own session. Point `HOME`
+  at a temporary folder and take `launchctl` off `PATH`, and have the install
+  skip the load when `launchctl` is missing.
+
+### rsync on macOS
+
+`/usr/bin/rsync` is `openrsync` (rsync 2.6.9 compatible). It lacks
+`--protect-args` and `--mkpath`, so a command written for rsync 3 fails with
+"unrecognized option". Prefer Homebrew's rsync (`/opt/homebrew/bin/rsync`)
+when it is there, detect `openrsync` or a major version below 3 with
+`rsync --version`, and for the old one drop those flags and single-quote the
+remote path, since the other computer's shell now reads it.
+
 ## What this does not do
 
 - **Distribution signing and notarization.** The result is ad hoc signed, so
