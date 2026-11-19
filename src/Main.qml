@@ -29,6 +29,7 @@ ApplicationWindow {
     // Single-key shortcuts stand down while a dialog is open.
     readonly property bool dialogOpen: helpVisible || editor.visible || completeDialog.visible
                                        || snoozeDialog.visible || contextDialog.visible || confirm.visible
+                                       || logDialog.visible
 
     readonly property var views: [
         { key: "today", label: qsTr("Today") },
@@ -88,8 +89,12 @@ ApplicationWindow {
     function deleteSelected() {
         if (backend.view === "history" && list.currentIndex >= 0) {
             const entry = backend.items[list.currentIndex]
-            confirm.ask(qsTr("Remove this entry from the history of “%1”?").arg(entry.title),
-                        qsTr("Remove"), () => backend.removeCompletion(entry.id))
+            if (entry.kind === "log")
+                confirm.ask(qsTr("Remove this note? Its follow-up task, if any, stays."),
+                            qsTr("Remove"), () => backend.removeLog(entry.id))
+            else
+                confirm.ask(qsTr("Remove this entry from the history of “%1”?").arg(entry.title),
+                            qsTr("Remove"), () => backend.removeCompletion(entry.id))
         } else if (hasSelection) {
             const id = selectedId
             confirm.ask(qsTr("Delete “%1”? What you've done stays in the history.").arg(selected.title),
@@ -115,6 +120,7 @@ ApplicationWindow {
     Shortcut { sequence: "]"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: win.cycleContext(1) }
     Shortcut { sequence: "["; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: win.cycleContext(-1) }
     Shortcut { sequence: "0"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: backend.contextFilter = 0 }
+    Shortcut { sequence: "L"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: logDialog.openFor(backend.contextFilter) }
     Shortcut { sequence: "C"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: contextDialog.openForNew(backend.contextFilter) }
     Shortcut { sequence: "Shift+C"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: contextDialog.openForNew(0) }
     Shortcut { sequences: ["/", StandardKey.Find]; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: search.forceActiveFocus() }
@@ -198,6 +204,15 @@ ApplicationWindow {
                     }
 
                     Button {
+                        text: qsTr("Log")
+                        flat: true
+                        onClicked: logDialog.openFor(backend.contextFilter)
+                        ToolTip.visible: hovered
+                        ToolTip.delay: 600
+                        ToolTip.text: qsTr("Note something on a context (L)")
+                    }
+
+                    Button {
                         text: qsTr("New task")
                         highlighted: true
                         onClicked: win.newTask()
@@ -229,7 +244,8 @@ ApplicationWindow {
                             id: loader
                             x: 12
                             width: parent.width - 24
-                            sourceComponent: row.modelData.kind === "task" ? taskRow : completionRow
+                            sourceComponent: row.modelData.kind === "task" ? taskRow
+                                           : row.modelData.kind === "log" ? logRow : completionRow
                             Component {
                                 id: taskRow
                                 TaskRow {
@@ -240,6 +256,14 @@ ApplicationWindow {
                                     onTodayRequested: backend.toggleToday(row.modelData.id)
                                     onSnoozeRequested: { win.selectIndex(row.index); win.snoozeSelected() }
                                     onEditRequested: { win.selectIndex(row.index); win.editSelected() }
+                                }
+                            }
+                            Component {
+                                id: logRow
+                                LogRow {
+                                    entry: row.modelData
+                                    current: row.index === list.currentIndex
+                                    onPicked: win.selectIndex(row.index)
                                 }
                             }
                             Component {
@@ -350,6 +374,7 @@ ApplicationWindow {
 
     TaskEditor { id: editor }
     CompleteDialog { id: completeDialog }
+    LogDialog { id: logDialog }
     SnoozeDialog { id: snoozeDialog }
     ContextDialog { id: contextDialog }
 

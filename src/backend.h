@@ -53,6 +53,8 @@ public:
     // Tests pin the date; the app follows the calendar.
     void setToday(const QDate &day);
     QDate today() const { return m_fixedToday.isValid() ? m_fixedToday : QDate::currentDate(); }
+    // A pinned day ticks a second per change, so order stays clear in tests.
+    QDateTime now() { return m_fixedToday.isValid() ? QDateTime(m_fixedToday, QTime(12, 0)).addSecs(m_tick++) : QDateTime::currentDateTime(); }
     const Store &store() const { return m_store; }
 
     Q_INVOKABLE QVariantMap task(int id) const;
@@ -66,6 +68,10 @@ public:
     Q_INVOKABLE void renameContext(int id, const QString &name);
     Q_INVOKABLE void removeContext(int id);
     Q_INVOKABLE void removeCompletion(int id);
+    // A note on a context; with followUp, a one-time task to deal with it.
+    // Fields: context, text, followUp, priority, due (ISO). Returns its id.
+    Q_INVOKABLE int addLog(const QVariantMap &fields);
+    Q_INVOKABLE void removeLog(int id);
     Q_INVOKABLE void undo();
     Q_INVOKABLE void redo();
     Q_INVOKABLE void dismissError();
@@ -93,6 +99,7 @@ private:
 
     QVariantMap describe(const Task &task, const QDate &today) const;
     QVariantMap describe(const Completion &done) const;
+    QVariantMap describe(const LogEntry &entry) const;
     QString dueText(const Task &task, const QDate &today) const;
     QString scheduleText(const Task &task) const;
     QString seasonText(const Task &task) const;
@@ -110,6 +117,7 @@ private:
     QList<QByteArray> m_undo, m_redo;
     QByteArray m_written;
     QDate m_fixedToday, m_shownDay;
+    int m_tick = 0;
     QFileSystemWatcher m_watcher;
     QTimer m_reloadDelay, m_clock;
 };

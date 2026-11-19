@@ -264,6 +264,97 @@ private slots:
         QVERIFY(backend.store().routines.isEmpty());
     }
 
+    // Noticing a squeak: a note in the car's history, optionally followed up.
+    void logNotesInterleaveAndFollowUp()
+    {
+        QTemporaryDir dir;
+        const QString path = dir.filePath("needful.json");
+        Backend backend(path);
+        backend.setToday(saturday);
+        const int car = backend.addContext("Automotive", 0);
+        const int crv = backend.addContext("CR-V", car), home = backend.addContext("Home", 0);
+        const int oil = backend.saveTask({{"title", "Oil change"}, {"contexts", QVariantList{crv}}});
+        backend.complete(oil, "5W-30");
+
+        QVERIFY(!backend.addLog({{"context", crv}, {"text", "   "}}));
+        const int plain = backend.addLog({{"context", crv}, {"text", "Tires look fine"}});
+        QVERIFY(plain);
+        QCOMPARE(backend.store().logEntry(plain)->task, 0);
+
+        const QString longText = QString("Squeak from the front left at low speed, louder when cold and turning "
+                                         "right into the driveway\nMaybe the sway bar link?");
+        const int squeak = backend.addLog({{"context", crv}, {"text", longText}, {"followUp", true},
+                                           {"priority", 3}, {"due", saturday.addDays(2).toString(Qt::ISODate)}});
+        const int followUpId = backend.store().logEntry(squeak)->task;
+        const Task *followUp = backend.store().task(followUpId);
+        QVERIFY(followUp);
+        QCOMPARE(followUp->schedule.kind, Schedule::Once);
+        QCOMPARE(followUp->context, crv);
+        QCOMPARE(followUp->priority, 3);
+        QCOMPARE(followUp->due, saturday.addDays(2));
+        QVERIFY(followUp->title.endsWith(QString::fromUtf8("…")));
+        QVERIFY(followUp->title.size() <= 81);
+        QVERIFY(!followUp->title.contains('\n'));
+        QCOMPARE(followUp->notes, longText);
+        QCOMPARE(Store::followUpTitle("Short one\nmore"), QString("Short one"));
+
+        backend.addLog({{"context", home}, {"text", "Gutter drips"}});
+
+        // History interleaves, newest first, filtered to the car.
+        backend.setContextFilter(car);
+        backend.setView("history");
+        QVariantList items = backend.items();
+        QCOMPARE(items.size(), 3);
+        QCOMPARE(items[0].toMap()["kind"].toString(), QString("log"));
+        QCOMPARE(items[0].toMap()["id"].toInt(), squeak);
+        QCOMPARE(items[0].toMap()["followUpDone"].toBool(), false);
+        QCOMPARE(items.last().toMap()["kind"].toString(), QString("completion"));
+        QCOMPARE(backend.counts()["history"].toInt(), 3);
+
+        // Following it up marks the note, and the completion points back.
+        backend.complete(followUpId, "Replaced the link");
+        items = backend.items();
+        QCOMPARE(items[0].toMap()["kind"].toString(), QString("completion"));
+        QCOMPARE(items[0].toMap()["fromLog"].toInt(), squeak);
+        for (const auto &item : items)
+            if (item.toMap()["id"].toInt() == squeak && item.toMap()["kind"] == "log")
+                QVERIFY(item.toMap()["followUpDone"].toBool());
+
+        backend.setSearch("driveway");
+        QCOMPARE(backend.items().size(), 1);
+        backend.setSearch({});
+
+        // Round trip through the file.
+        Store loaded;
+        QVERIFY(loaded.load(path));
+        QCOMPARE(loaded.log.size(), 3);
+        QCOMPARE(loaded.toJson(), backend.store().toJson());
+
+        // Deleting the car moves its notes up to Automotive.
+        backend.removeContext(crv);
+        QCOMPARE(backend.store().logEntry(squeak)->context, car);
+    }
+
+    void undoTakesBackANoteAndItsFollowUp()
+    {
+        QTemporaryDir dir;
+        Backend backend(dir.filePath("needful.json"));
+        backend.setToday(saturday);
+        const int tasks = backend.store().tasks.size();
+        const int id = backend.addLog({{"text", "Check the leak"}, {"followUp", true}});
+        QCOMPARE(backend.store().tasks.size(), tasks + 1);
+        QCOMPARE(backend.store().tasks.last().due, saturday);
+        backend.undo();
+        QVERIFY(!backend.store().logEntry(id));
+        QCOMPARE(backend.store().tasks.size(), tasks);
+
+        // Removing a note leaves its follow-up.
+        const int again = backend.addLog({{"text", "Check the leak"}, {"followUp", true}});
+        backend.removeLog(again);
+        QVERIFY(!backend.store().logEntry(again));
+        QCOMPARE(backend.store().tasks.size(), tasks + 1);
+    }
+
     void themeFallsBack()
     {
         QTemporaryDir dir;

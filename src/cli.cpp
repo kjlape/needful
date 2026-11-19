@@ -267,7 +267,7 @@ int today(const QStringList &arguments) {
 }
 
 int history(const QStringList &arguments) {
-    Command command("history", "Show what was done, newest first.");
+    Command command("history", "Show what was done and noted, newest first.");
     command.context();
     command.parser.addOption({"task", "Only this task's history", "task"});
     command.parser.addOption({"search", "Only entries mentioning this", "text"});
@@ -288,14 +288,68 @@ int history(const QStringList &arguments) {
         const QVariantMap c = item.toMap();
         if (only && c["task"].toInt() != only)
             continue;
-        array.append(taskJson(c));
-        if (!command.wantsJson())
-            print(stdout, QString("%1  %2%3%4").arg(c["date"].toString(), c["title"].toString(),
-                                                   c["contextPath"].toString().isEmpty() ? "" : "  [" + c["contextPath"].toString() + "]",
+        // JSON keeps "kind": a completion, or a log note.
+        array.append(QJsonObject::fromVariantMap(c));
+        if (command.wantsJson())
+            continue;
+        const QString where = c["contextPath"].toString().isEmpty() ? "" : "  [" + c["contextPath"].toString() + "]";
+        if (c["kind"] == "log") {
+            QString followUp;
+            if (c["task"].toInt())
+                followUp = c["followUpDone"].toBool() ? "\n      followed up"
+                                                      : "\n      follow-up " + c["task"].toString() + ": " +
+                                                            c["followUpDueText"].toString();
+            print(stdout, QString("%1  note: %2%3%4").arg(c["date"].toString(), c["text"].toString(), where, followUp));
+        } else {
+            print(stdout, QString("%1  %2%3%4").arg(c["date"].toString(), c["title"].toString(), where,
                                                    c["note"].toString().isEmpty() ? "" : "\n      " + c["note"].toString()));
+        }
     }
     if (command.wantsJson())
         printJson(array);
+    return 0;
+}
+
+int logNote(const QStringList &arguments) {
+    Command command("log", "Note something on a context, optionally with a one-time task to follow it up.");
+    command.parser.addPositionalArgument("text", "What you noticed", "<text>");
+    command.context();
+    command.parser.addOption({"follow-up", "Add a one-time task to follow it up"});
+    command.parser.addOption({"priority", "For the follow-up: low, normal (the default), high, or urgent", "priority"});
+    command.parser.addOption({"due", "For the follow-up: YYYY-MM-DD (today by default)", "date"});
+    command.json();
+    command.parser.process(arguments);
+    const QString text = command.parser.positionalArguments().mid(1).join(' ').trimmed();
+    if (text.isEmpty())
+        return fail("Say what you noticed: needful log \"Squeak from the front left\" --context CR-V");
+    Backend backend(command.dataPath());
+    if (!backend.error().isEmpty())
+        return fail(backend.error());
+    const int context = contextOption(command, backend);
+    if (context < 0)
+        return 1;
+    const int priority = priorityFrom(command.parser.value("priority"));
+    if (!priority)
+        return fail("--priority is low, normal, high, or urgent.");
+    const QString due = command.parser.value("due");
+    if (!due.isEmpty() && !QDate::fromString(due, Qt::ISODate).isValid())
+        return fail("--due takes a date like 2026-05-01.");
+    const int id = backend.addLog({{"context", context}, {"text", text}, {"followUp", command.parser.isSet("follow-up")},
+                                   {"priority", priority}, {"due", due}});
+    if (!id)
+        return fail(backend.error().isEmpty() ? "Could not log the note." : backend.error());
+    const LogEntry *entry = backend.store().logEntry(id);
+    if (command.wantsJson()) {
+        QJsonObject object{{"id", id}, {"context", entry->context}, {"text", entry->text},
+                           {"at", entry->at.toString(Qt::ISODate)}, {"task", entry->task}};
+        if (entry->task)
+            object["followUp"] = taskJson(backend.task(entry->task));
+        printJson(object);
+    } else {
+        print(stdout, "Logged note " + QString::number(id));
+        if (entry->task)
+            print(stdout, "Follow-up " + taskLine(backend.task(entry->task)));
+    }
     return 0;
 }
 
@@ -389,14 +443,15 @@ QString cliSummary() {
            "  done <task> [--note N]           Mark a task done\n"
            "  snooze <task> <days>             Hide a task for some days\n"
            "  today <task>                     Pull a task into today, or put it back\n"
-           "  history [--context C]            What was done, newest first\n"
+           "  log <text> [--follow-up]         Note something on a context\n"
+           "  history [--context C]            What was done and noted, newest first\n"
            "  contexts [add <path>]            List or add contexts\n"
            "  skill [install]                  Print the skill for coding agents, or install it\n\n"
            "Every command takes --data <path>; the usual file is\n  " + Backend::defaultDataPath();
 }
 
 bool isCliCommand(const QString &word) {
-    return QStringList{"list", "add", "done", "snooze", "today", "history", "contexts", "skill",
+    return QStringList{"list", "add", "done", "snooze", "today", "log", "history", "contexts", "skill",
                        "help", "--help", "-h", "--version", "-v"}
         .contains(word);
 }
@@ -412,6 +467,7 @@ int runCli(const QStringList &arguments) {
            : command == "done"     ? done(arguments)
            : command == "snooze"   ? snooze(arguments)
            : command == "today"    ? today(arguments)
+           : command == "log"      ? logNote(arguments)
            : command == "history"  ? history(arguments)
            : command == "contexts" ? contexts(arguments)
            : command == "skill"    ? skill(arguments)

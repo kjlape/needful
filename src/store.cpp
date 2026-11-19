@@ -63,7 +63,7 @@ bool Store::save(const QString &path, QString *error) const {
 }
 
 QByteArray Store::toJson() const {
-    QJsonArray contextArray, routineArray, taskArray, completionArray;
+    QJsonArray contextArray, routineArray, taskArray, completionArray, logArray;
     static const char *kinds[] = {"once", "every", "ask"};
     auto scheduleJson = [](const Schedule &s) {
         return QJsonObject{{"kind", kinds[s.kind]}, {"every", s.every}, {"unit", s.unit}, {"fromDone", s.fromDone}};
@@ -103,13 +103,20 @@ QByteArray Store::toJson() const {
                                            {"task", c.task},
                                            {"title", c.title},
                                            {"context", c.context},
-                                           {"at", c.at.toString(Qt::ISODate)},
+                                           {"at", c.at.toString(Qt::ISODateWithMs)},
                                            {"note", c.note}});
+    for (const auto &e : log)
+        logArray.append(QJsonObject{{"id", e.id},
+                                    {"context", e.context},
+                                    {"at", e.at.toString(Qt::ISODateWithMs)},
+                                    {"text", e.text},
+                                    {"task", e.task}});
     return QJsonDocument(QJsonObject{{"needful", FormatVersion},
                                      {"contexts", contextArray},
                                      {"routines", routineArray},
                                      {"tasks", taskArray},
-                                     {"completions", completionArray}})
+                                     {"completions", completionArray},
+                                     {"log", logArray}})
         .toJson(QJsonDocument::Indented);
 }
 
@@ -184,6 +191,12 @@ bool Store::fromJson(const QByteArray &json, QString *error) {
                                    o.value("context").toInt(),
                                    QDateTime::fromString(o.value("at").toString(), Qt::ISODate),
                                    o.value("note").toString()});
+    }
+    for (const auto &value : root.value("log").toArray()) {
+        const QJsonObject o = value.toObject();
+        loaded.log.append({o.value("id").toInt(), o.value("context").toInt(),
+                           QDateTime::fromString(o.value("at").toString(), Qt::ISODate), o.value("text").toString(),
+                           o.value("task").toInt()});
     }
     *this = loaded;
     return true;
@@ -371,6 +384,9 @@ bool Store::removeContext(int id) {
     for (auto &done : completions)
         if (done.context == id)
             done.context = parent;
+    for (auto &entry : log)
+        if (entry.context == id)
+            entry.context = parent;
     contexts.removeIf([id](const Context &other) { return other.id == id; });
     return true;
 }
@@ -457,4 +473,45 @@ bool Store::complete(int id, const QDateTime &at, const QString &note, const QDa
 
 bool Store::removeCompletion(int id) {
     return completions.removeIf([id](const Completion &c) { return c.id == id; }) > 0;
+}
+
+int Store::addLog(int contextId, const QDateTime &at, const QString &text) {
+    const QString trimmed = text.trimmed();
+    if (trimmed.isEmpty())
+        return 0;
+    const int id = highestId(log) + 1;
+    log.append({id, context(contextId) ? contextId : 0, at, trimmed, 0});
+    return id;
+}
+
+bool Store::removeLog(int id) {
+    return log.removeIf([id](const LogEntry &e) { return e.id == id; }) > 0;
+}
+
+const LogEntry *Store::logEntry(int id) const {
+    for (const auto &e : log)
+        if (e.id == id)
+            return &e;
+    return nullptr;
+}
+
+int Store::logForTask(int taskId) const {
+    for (const auto &e : log)
+        if (taskId && e.task == taskId)
+            return e.id;
+    return 0;
+}
+
+// The first line, cut at a word near 80 characters, so a long note still
+// reads as a task in a list.
+QString Store::followUpTitle(const QString &text) {
+    const QString line = text.trimmed().section('\n', 0, 0).trimmed();
+    constexpr int Limit = 80;
+    if (line.size() <= Limit)
+        return line;
+    QString cut = line.left(Limit);
+    const int space = cut.lastIndexOf(' ');
+    if (space > Limit / 2)
+        cut = cut.left(space);
+    return cut.trimmed() + QString::fromUtf8("…");
 }

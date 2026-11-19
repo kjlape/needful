@@ -235,11 +235,24 @@ void Backend::refresh() {
         return ra != rb ? ra < rb : a->title.localeAwareCompare(b->title) < 0;
     });
 
+    QList<const LogEntry *> notes;
+    for (const auto &e : m_store.log)
+        if (m_store.inContext(e.context, m_contextFilter))
+            notes.append(&e);
+
     m_items.clear();
     if (m_view == "history") {
+        // What was done and what was noticed, interleaved, newest first.
+        QList<std::pair<QDateTime, QVariantMap>> entries;
         for (const Completion *c : history)
             if (matches(c->title + "\n" + c->note + "\n" + m_store.contextPath(c->context)))
-                m_items.append(describe(*c));
+                entries.append({c->at, describe(*c)});
+        for (const LogEntry *e : notes)
+            if (matches(e->text + "\n" + m_store.contextPath(e->context)))
+                entries.append({e->at, describe(*e)});
+        std::stable_sort(entries.begin(), entries.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
+        for (const auto &entry : entries)
+            m_items.append(entry.second);
     } else {
         const auto &list = m_view == "today" ? todays : m_view == "upcoming" ? upcoming : needful;
         for (const Task *t : list)
@@ -255,7 +268,7 @@ void Backend::refresh() {
     m_counts = {{"today", int(todays.size())},
                 {"needful", int(needful.size())},
                 {"upcoming", int(upcoming.size())},
-                {"history", int(history.size())},
+                {"history", int(history.size() + notes.size())},
                 {"doneToday", int(m_doneToday.size())}};
 
     // Contexts in tree order, each with how much is due in it and under it.
@@ -428,7 +441,25 @@ QVariantMap Backend::describe(const Completion &c) const {
             {"date", locale.toString(c.at.date(), QLocale::ShortFormat)},
             {"time", locale.toString(c.at.time(), QLocale::ShortFormat)},
             {"ago", agoText(c.at.date(), today())},
-            {"exists", m_store.task(c.task) != nullptr}};
+            {"exists", m_store.task(c.task) != nullptr},
+            {"fromLog", m_store.logForTask(c.task)}};
+}
+
+QVariantMap Backend::describe(const LogEntry &e) const {
+    const QLocale locale;
+    const Task *followUp = m_store.task(e.task);
+    const bool done = followUp ? followUp->archived || m_store.lastDone(followUp->id) : e.task != 0;
+    return {{"kind", "log"},
+            {"id", e.id},
+            {"text", e.text},
+            {"contextPath", m_store.contextPath(e.context)},
+            {"date", locale.toString(e.at.date(), QLocale::ShortFormat)},
+            {"time", locale.toString(e.at.time(), QLocale::ShortFormat)},
+            {"ago", agoText(e.at.date(), today())},
+            {"task", e.task},
+            {"followUpTitle", followUp ? followUp->title : QString()},
+            {"followUpDone", e.task != 0 && done},
+            {"followUpDueText", followUp && !done ? dueText(*followUp, today()) : QString()}};
 }
 
 QVariantMap Backend::task(int id) const {
@@ -599,7 +630,7 @@ void Backend::removeTask(int id) {
 
 void Backend::complete(int id, const QString &note, const QString &nextDue) {
     change([&] {
-        const QDateTime at = m_fixedToday.isValid() ? QDateTime(today(), QTime(12, 0)) : QDateTime::currentDateTime();
+        const QDateTime at = now();
         return m_store.complete(id, at, note, QDate::fromString(nextDue, Qt::ISODate));
     });
 }
@@ -663,6 +694,39 @@ void Backend::renameContext(int id, const QString &name) {
 void Backend::removeContext(int id) {
     if (change([&] { return m_store.removeContext(id); }) && !m_store.context(m_contextFilter))
         setContextFilter(0);
+}
+
+int Backend::addLog(const QVariantMap &fields) {
+    const QString text = fields.value("text").toString().trimmed();
+    if (text.isEmpty())
+        return 0;
+    int id = 0;
+    // The note and its follow-up are one change, so one undo takes back both.
+    change([&] {
+        const QDateTime at = now();
+        id = m_store.addLog(fields.value("context").toInt(), at, text);
+        if (!id)
+            return false;
+        if (fields.value("followUp").toBool()) {
+            Task task;
+            task.title = Store::followUpTitle(text);
+            task.notes = text != task.title ? text : QString();
+            task.context = m_store.log.last().context;
+            task.priority = std::clamp(fields.value("priority", 2).toInt(), 1, 4);
+            task.schedule.kind = Schedule::Once;
+            task.due = QDate::fromString(fields.value("due").toString(), Qt::ISODate);
+            const int taskId = m_store.addTask(task, today());
+            for (auto &e : m_store.log)
+                if (e.id == id)
+                    e.task = taskId;
+        }
+        return true;
+    });
+    return id;
+}
+
+void Backend::removeLog(int id) {
+    change([&] { return m_store.removeLog(id); });
 }
 
 void Backend::removeCompletion(int id) {

@@ -4,6 +4,8 @@
         <file alias="Sidebar.qml">Sidebar.qml</file>
         <file alias="TaskRow.qml">TaskRow.qml</file>
         <file alias="CompletionRow.qml">CompletionRow.qml</file>
+        <file alias="LogRow.qml">LogRow.qml</file>
+        <file alias="LogDialog.qml">LogDialog.qml</file>
         <file alias="TaskDetail.qml">TaskDetail.qml</file>
         <file alias="TaskEditor.qml">TaskEditor.qml</file>
         <file alias="CompleteDialog.qml">CompleteDialog.qml</file>

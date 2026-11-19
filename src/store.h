@@ -70,6 +70,16 @@ struct Completion {
     QString note;
 };
 
+// A note on a context: a squeak, a leak, an idea. It sits in the history
+// beside what was done, and can raise a one-off task to follow it up.
+struct LogEntry {
+    int id = 0;
+    int context = 0;
+    QDateTime at;
+    QString text;
+    int task = 0; // The follow-up task, or 0.
+};
+
 class Store {
 public:
     enum State { Due, Upcoming, Snoozed, OutOfSeason, Archived };
@@ -78,6 +88,7 @@ public:
     QList<Routine> routines;
     QList<Task> tasks;
     QList<Completion> completions;
+    QList<LogEntry> log;
 
     // Reading and writing. Saving writes beside the file and renames, so a
     // crash never leaves half a file, and keeps the previous one as .bak.
@@ -125,6 +136,12 @@ public:
     // caller's nextDue, where an invalid date retires the task.
     bool complete(int id, const QDateTime &at, const QString &note, const QDate &askedNext = {});
     bool removeCompletion(int id);
+    // Notes. A follow-up becomes a one-time task in the same context.
+    int addLog(int context, const QDateTime &at, const QString &text);
+    bool removeLog(int id);
+    const LogEntry *logEntry(int id) const;
+    int logForTask(int taskId) const; // The entry a follow-up task came from, or 0.
+    static QString followUpTitle(const QString &text);
 
     static QString unitName(const QString &unit);
 

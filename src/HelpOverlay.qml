@@ -14,6 +14,7 @@ Rectangle {
         ["T", qsTr("Pull into today, or put back")],
         ["S", qsTr("Snooze")],
         ["N", qsTr("New task")],
+        ["L", qsTr("Log a note on a context")],
         ["E / Enter", qsTr("Edit")],
         ["X / Delete", qsTr("Delete")],
         ["J / K", qsTr("Next / previous")],

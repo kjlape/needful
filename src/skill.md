@@ -14,7 +14,8 @@ no display, takes `--json`, exits 0 or 1, and writes errors to stderr.
 - Repeat `--context` to add a routine shared by several contexts (one oil change for every vehicle); each context gets its own copy with its own id, due date, and history.
 - `needful done <id> --note "5W-30, 84,210 miles"` (tasks made with `--ask` also take `--next YYYY-MM-DD`; without it they retire)
 - `needful snooze <id> <days>`, `needful today <id>` (pull into today, or put back)
-- `needful history [--context C] [--task id] [--search oil] --json` answers "when did I last…"
+- `needful log "Squeak from the front left at low speed" --context CR-V [--follow-up] [--priority high] [--due 2026-05-01]` notes something on a context; `--follow-up` also adds a one-time task to deal with it.
+- `needful history [--context C] [--task id] [--search oil] --json` answers "when did I last…"; it interleaves completions (`"kind": "completion"`) with notes (`"kind": "log"`).
 - `needful contexts [add "Parent/Child"] --json`
 
 Ask before marking things done or deleting on the person's behalf. History is

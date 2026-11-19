@@ -26,6 +26,9 @@ one is. Pick from the top, and trust that nothing is forgotten.
   be in season only some months; the time out of season doesn't count as late.
 - **History** keeps every completion with its note, under its context, so at
   the car you can see when the oil was last changed and with what.
+- **Notes** (`L`) log anything you notice on a context, like a squeak at low
+  speed, interleaved with that context's history. Mark one to follow up and
+  it becomes a one-time task in that context, ranked with everything else.
 
 ## Keys
 
@@ -35,6 +38,7 @@ one is. Pick from the top, and trust that nothing is forgotten.
 | `T` | Pull into today, or put back |
 | `S` | Snooze |
 | `N` | New task |
+| `L` | Log a note on a context, optionally to follow up |
 | `E` / `Enter` | Edit |
 | `X` / `Delete` | Delete (history stays) |
 | `J` / `K`, `↓` / `↑` | Next / previous |
@@ -58,6 +62,7 @@ needful add "Change the air filter" --context Home --every 1m
 needful add "Mow the lawn" --context Home --every 1w --priority high --months 4-10
 needful add "Oil change" --context CR-V --context Tacoma --context Civic --every 6m
 needful done 3 --note "Mobil 1 5W-20, 84,210 mi"
+needful log "Squeak from the front left at low speed" --context CR-V --follow-up
 needful history --context "White Honda CR-V" --search oil
 needful contexts add "Automotive/White Honda CR-V"
 needful skill install   # teaches coding agents to use it
