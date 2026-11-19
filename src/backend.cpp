@@ -102,6 +102,11 @@ Backend::CatchUp Backend::catchUp() {
     QString message;
     SyncFolder::Pointer pointer;
     if (SyncFolder::readPointer(contents, &pointer)) {
+        if (pointer.elsewhere()) {
+            m_sync.reset();
+            setError(SyncFolder::elsewhereError(m_path));
+            return Unreadable;
+        }
         // Set up from the command line while this was open, or moved.
         if (!m_sync || m_sync->folder() != pointer.folder || m_sync->machine() != pointer.machine)
             m_sync = std::make_unique<SyncFolder>(pointer.folder, pointer.machine);

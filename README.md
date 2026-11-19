@@ -102,6 +102,11 @@ deleted. The data file then only says which folder to use, and the single
 file it held is kept beside it as `needful.json.before-sync`. Copy the
 folder to keep a backup.
 
+The data file itself has to stay on its own computer. If yours is in a
+shared folder (the old way of syncing), setup says so and asks you to move
+it first, and a data file that a sync tool copied from another computer is
+refused rather than used.
+
 ## On your phone
 
 `needful serve` runs a small web version for the phone: Today, Needful,

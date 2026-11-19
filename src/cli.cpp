@@ -11,6 +11,7 @@
 #include <QJsonObject>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QStandardPaths>
 #include <cstdio>
 
 #include "backend.h"
@@ -451,7 +452,7 @@ int sync(const QStringList &arguments) {
         SyncFolder::Setup result;
         QString error;
         if (!SyncFolder::setup(dataPath, argument, command.parser.value("name"), QDateTime::currentDateTime(), &result,
-                               &error))
+                               &error, QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/needful.json"))
             return fail(error);
         const QString folder = shortPath(QDir::cleanPath(QFileInfo(argument).absoluteFilePath()));
         if (command.wantsJson()) {

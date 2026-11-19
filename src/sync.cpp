@@ -1,5 +1,6 @@
 #include "sync.h"
 
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -60,14 +61,58 @@ bool SyncFolder::readPointer(const QByteArray &dataFile, Pointer *pointer) {
     if (root.value("needful").toInt() != PointerVersion || sync.value("folder").toString().isEmpty() ||
         sync.value("machine").toString().isEmpty())
         return false;
-    if (pointer) *pointer = {sync.value("folder").toString(), sync.value("machine").toString()};
+    if (pointer)
+        *pointer = {sync.value("folder").toString(), sync.value("machine").toString(), sync.value("computer").toString()};
     return true;
 }
 
 QByteArray SyncFolder::pointerJson(const Pointer &pointer) {
     return QJsonDocument(QJsonObject{{"needful", PointerVersion},
-                                     {"sync", QJsonObject{{"folder", pointer.folder}, {"machine", pointer.machine}}}})
+                                     {"sync", QJsonObject{{"folder", pointer.folder},
+                                                          {"machine", pointer.machine},
+                                                          {"computer", pointer.computer}}}})
         .toJson(QJsonDocument::Indented);
+}
+
+// A hash of the operating system's id for this computer, which stays the
+// same when the host name changes, or of the host name where there is none.
+QString SyncFolder::thisComputer() {
+    QByteArray id = QSysInfo::machineUniqueId();
+    if (id.isEmpty())
+        id = QSysInfo::machineHostName().toUtf8();
+    return QCryptographicHash::hash(id, QCryptographicHash::Sha256).toHex().left(16);
+}
+
+QString SyncFolder::elsewhereError(const QString &dataPath) {
+    return QString("%1 was set up for sync on another computer; a sync tool probably copied it here. "
+                   "Point Needful at a data file only this computer uses (--data or NEEDFUL_DATA), "
+                   "then run needful sync setup <folder> here.")
+        .arg(dataPath);
+}
+
+QString SyncFolder::syncedBy(const QString &path, QString *root) {
+    const QString absolute = QFileInfo(path).absoluteFilePath();
+    if (absolute.contains("/Library/Mobile Documents/")) {
+        if (root) *root = absolute.section("/Library/Mobile Documents/", 0, 0) + "/Library/Mobile Documents";
+        return "iCloud Drive";
+    }
+    // The marks each tool leaves at the top of a folder it keeps.
+    static const QList<std::pair<QString, QStringList>> marks{
+        {"Syncthing", {".stfolder"}},
+        {"Dropbox", {".dropbox", ".dropbox.cache"}},
+        {"Nextcloud", {".sync_*.db", "._sync_*.db", ".nextcloudsync.log", ".owncloudsync.log"}},
+    };
+    QDir dir = QFileInfo(absolute).absoluteDir();
+    for (int depth = 0; depth < 64; ++depth) {
+        for (const auto &[tool, names] : marks)
+            if (!dir.entryList(names, QDir::AllEntries | QDir::Hidden | QDir::System).isEmpty()) {
+                if (root) *root = dir.absolutePath();
+                return tool;
+            }
+        if (!dir.cdUp())
+            break;
+    }
+    return {};
 }
 
 SyncFolder::SyncFolder(const QString &folder, const QString &machine) : m_folder(folder), m_machine(machine) {}
@@ -593,14 +638,41 @@ Store SyncFolder::combine(const Store &folder, const Store &local, Setup *counts
 }
 
 bool SyncFolder::setup(const QString &dataPath, const QString &folder, const QString &name, const QDateTime &now,
-                       Setup *result, QString *error) {
+                       Setup *result, QString *error, const QString &defaultDataPath) {
     const QString absolute = QDir::cleanPath(QFileInfo(folder).absoluteFilePath());
     QByteArray contents;
     if (QFile file(dataPath); file.open(QIODevice::ReadOnly))
         contents = file.readAll();
 
+    // The data file must stay on this computer: if a sync tool shared it,
+    // the pointer would reach the other computers and they would all write
+    // as this one.
+    const QString data = QDir::cleanPath(QFileInfo(dataPath).absoluteFilePath());
+    const QString usual = defaultDataPath.isEmpty() ? QString("the usual data folder")
+                                                    : QDir::cleanPath(QFileInfo(defaultDataPath).absoluteFilePath());
+    if (data.startsWith(absolute + "/")) {
+        if (error)
+            *error = QString("The data file %1 is inside %2. Keep it somewhere only this computer uses, like %3, "
+                             "and run setup again.")
+                         .arg(data, absolute, usual);
+        return false;
+    }
+    QString shared;
+    if (const QString tool = syncedBy(data, &shared); !tool.isEmpty()) {
+        if (error)
+            *error = QString("The data file %1 is in %2, which %3 keeps in step with your other computers. "
+                             "Copy it somewhere only this computer uses, like %4, point Needful there, "
+                             "and run setup again.")
+                         .arg(data, shared, tool, usual);
+        return false;
+    }
+
     Pointer pointer;
     if (readPointer(contents, &pointer)) {
+        if (pointer.elsewhere()) {
+            if (error) *error = elsewhereError(dataPath);
+            return false;
+        }
         if (QDir::cleanPath(pointer.folder) != absolute) {
             if (error) *error = QString("This machine already syncs with %1.").arg(pointer.folder);
             return false;
@@ -660,5 +732,5 @@ bool SyncFolder::setup(const QString &dataPath, const QString &folder, const QSt
         QFile::remove(dataPath + ".before-sync");
         QFile::copy(dataPath, dataPath + ".before-sync");
     }
-    return saveFile(dataPath, pointerJson({absolute, sync.m_machine}), error);
+    return saveFile(dataPath, pointerJson({absolute, sync.m_machine, thisComputer()}), error);
 }

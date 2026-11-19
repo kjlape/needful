@@ -44,12 +44,23 @@ public:
     // The data file of a synced machine points at the folder instead of
     // holding the data. Its version is past what older Needfuls read, so they
     // refuse it instead of starting empty and writing over it.
+    //
+    // The pointer also says which computer it belongs to. If a sync tool
+    // copied it to another computer, that one would write as this machine,
+    // and two computers writing one file is what this exists to prevent.
     struct Pointer {
         QString folder;
         QString machine;
+        QString computer; // Empty in pointers from before it was kept.
+        bool elsewhere() const { return !computer.isEmpty() && computer != thisComputer(); }
     };
     static bool readPointer(const QByteArray &dataFile, Pointer *pointer);
     static QByteArray pointerJson(const Pointer &pointer);
+    static QString thisComputer();
+    static QString elsewhereError(const QString &dataPath);
+    // The sync tool keeping a folder that holds `path` in step ("Syncthing",
+    // "Dropbox", ...), or empty. `root` is set to that folder.
+    static QString syncedBy(const QString &path, QString *root = nullptr);
 
     SyncFolder(const QString &folder, const QString &machine);
 
@@ -82,8 +93,10 @@ public:
         QString name;
         int tasks = 0, contexts = 0, history = 0; // Moved in, or merged in.
     };
+    // Refuses a data file that a sync tool shares, or that sits inside the
+    // folder; defaultDataPath is where the message suggests keeping it.
     static bool setup(const QString &dataPath, const QString &folder, const QString &name, const QDateTime &now,
-                      Setup *result, QString *error);
+                      Setup *result, QString *error, const QString &defaultDataPath = {});
     // Adds to `folder` what only `local` has; counts what it added.
     static Store combine(const Store &folder, const Store &local, Setup *counts);
 

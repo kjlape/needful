@@ -703,6 +703,49 @@ private slots:
         QTRY_COMPARE(again.syncText(), QString::fromUtf8("⇄ Synced · desktop just now"));
     }
 
+    // The data file stays on this computer. Shared by a sync tool, the
+    // pointer would reach the other computers, and they'd write as this one.
+    void syncKeepsTheDataFileOnThisComputer()
+    {
+        QTemporaryDir dir;
+        const QDateTime noon(saturday, QTime(12, 0));
+        SyncFolder::Setup setup;
+        QString error;
+        const QString folder = dir.filePath("Sync/needful");
+        QVERIFY(!SyncFolder::setup(folder + "/needful.json", folder, {}, noon, &setup, &error));
+        QVERIFY(error.contains("is inside"));
+
+        QDir().mkpath(dir.filePath("Dropbox/apps"));
+        write(dir.filePath("Dropbox/.dropbox"), "{}");
+        QVERIFY(!SyncFolder::setup(dir.filePath("Dropbox/apps/needful.json"), folder, {}, noon, &setup, &error));
+        QVERIFY(error.contains("Dropbox keeps in step"));
+        QVERIFY(!QFile::exists(dir.filePath("Dropbox/apps/needful.json")));
+        QCOMPARE(SyncFolder::syncedBy(dir.filePath("plain/needful.json")), QString());
+
+        // Set up here, the pointer names this computer and works.
+        const QString data = dir.filePath("local/needful.json");
+        QVERIFY2(SyncFolder::setup(data, folder, "desktop", noon, &setup, &error), qPrintable(error));
+        SyncFolder::Pointer pointer;
+        QVERIFY(SyncFolder::readPointer(contentsOf(data), &pointer));
+        QCOMPARE(pointer.computer, SyncFolder::thisComputer());
+        QVERIFY(!pointer.elsewhere());
+
+        // Copied to another computer, it refuses to write as this machine.
+        pointer.computer = "0123456789abcdef";
+        const QString copied = dir.filePath("other/needful.json");
+        QDir().mkpath(dir.filePath("other"));
+        write(copied, SyncFolder::pointerJson(pointer));
+        const QByteArray before = contentsOf(folder + "/machines/" + pointer.machine + ".json");
+        Backend other(copied);
+        other.setToday(saturday);
+        QVERIFY(other.error().contains("another computer"));
+        QVERIFY(!other.sync());
+        QCOMPARE(other.saveTask({{"title", "Written as the desktop"}}), 0);
+        QCOMPARE(contentsOf(folder + "/machines/" + pointer.machine + ".json"), before);
+        QVERIFY(!SyncFolder::setup(copied, folder, {}, noon, &setup, &error));
+        QVERIFY(error.contains("another computer"));
+    }
+
     void httpParsesSplitRequests()
     {
         HttpRequestParser parser;
