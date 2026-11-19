@@ -69,14 +69,44 @@ Rectangle {
                 Chip { text: pane.task.scheduleText || "" }
                 Chip { text: pane.task.seasonText || "" }
                 Chip { text: pane.task.today ? qsTr("On today's list") : ""; tint: theme.accent }
+                Chip {
+                    readonly property var own: pane.task.overrides || []
+                    text: own.length === 0 ? "" : qsTr("Own %1").arg(own.map(f => f === "schedule" ? qsTr("schedule")
+                                                                            : f === "priority" ? qsTr("priority")
+                                                                            : qsTr("season")).join(", "))
+                }
             }
 
+            // A routine's shared notes, then this context's own.
+            Label {
+                visible: text !== ""
+                text: pane.task.sharedNotes || ""
+                wrapMode: Text.Wrap
+                color: "#c4c4cc"
+                Layout.fillWidth: true
+            }
             Label {
                 visible: text !== ""
                 text: pane.task.notes || ""
                 wrapMode: Text.Wrap
                 color: "#c4c4cc"
                 Layout.fillWidth: true
+            }
+
+            ColumnLayout {
+                visible: (pane.task.copies || []).length > 0
+                Layout.fillWidth: true
+                spacing: 4
+                Label { text: qsTr("Also in"); color: "#85858e"; font.pixelSize: 12 }
+                Repeater {
+                    model: pane.task.copies || []
+                    RowLayout {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        Label { text: modelData.contextPath; color: "#c4c4cc"; elide: Text.ElideRight; Layout.fillWidth: true }
+                        Label { text: modelData.dueText; color: "#85858e"; font.pixelSize: 12 }
+                    }
+                }
             }
 
             GridLayout {

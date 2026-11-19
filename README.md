@@ -14,6 +14,10 @@ one is. Pick from the top, and trust that nothing is forgotten.
 - **Contexts** group tasks by where you do them: Home, Automotive › White
   Honda CR-V, Work › a client, YouTube. Contexts nest, and picking one filters
   every list to it and everything inside it.
+- **Routines** share one task across several contexts: tick all three vehicles
+  on "Oil change" and each gets its own copy, with its own due date, snooze,
+  and history. Edits to the routine reach every copy, and a copy can keep its
+  own schedule, priority, season, and notes ("Only Tacoma" in the editor).
 - **Today** is the day's inbox. Pull tasks into it with `T`; it starts clean
   every morning, and what's done shows below, crossed off.
 - **Snooze** hides a task for a while without pretending it's done.
@@ -52,6 +56,7 @@ Every command needs no display, takes `--json`, and exits 0 or 1:
 needful list [--view needful|today|upcoming|all] [--context "Automotive/White Honda CR-V"]
 needful add "Change the air filter" --context Home --every 1m
 needful add "Mow the lawn" --context Home --every 1w --priority high --months 4-10
+needful add "Oil change" --context CR-V --context Tacoma --context Civic --every 6m
 needful done 3 --note "Mobil 1 5W-20, 84,210 mi"
 needful history --context "White Honda CR-V" --search oil
 needful contexts add "Automotive/White Honda CR-V"

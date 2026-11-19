@@ -63,25 +63,34 @@ bool Store::save(const QString &path, QString *error) const {
 }
 
 QByteArray Store::toJson() const {
-    QJsonArray contextArray, taskArray, completionArray;
+    QJsonArray contextArray, routineArray, taskArray, completionArray;
+    static const char *kinds[] = {"once", "every", "ask"};
+    auto scheduleJson = [](const Schedule &s) {
+        return QJsonObject{{"kind", kinds[s.kind]}, {"every", s.every}, {"unit", s.unit}, {"fromDone", s.fromDone}};
+    };
+    auto monthsJson = [](const QList<int> &list) {
+        QJsonArray months;
+        for (int m : list)
+            months.append(m);
+        return months;
+    };
+    for (const auto &r : routines)
+        routineArray.append(QJsonObject{{"id", r.id}, {"title", r.title}, {"notes", r.notes},
+                                        {"priority", r.priority}, {"schedule", scheduleJson(r.schedule)},
+                                        {"months", monthsJson(r.months)}});
     for (const auto &c : contexts)
         contextArray.append(QJsonObject{{"id", c.id}, {"name", c.name}, {"parent", c.parent}});
     for (const auto &t : tasks) {
-        QJsonArray months;
-        for (int m : t.months)
-            months.append(m);
-        static const char *kinds[] = {"once", "every", "ask"};
         taskArray.append(QJsonObject{
             {"id", t.id},
+            {"routine", t.routine},
+            {"overrides", QJsonArray::fromStringList(t.overrides)},
             {"title", t.title},
             {"notes", t.notes},
             {"context", t.context},
             {"priority", t.priority},
-            {"schedule", QJsonObject{{"kind", kinds[t.schedule.kind]},
-                                     {"every", t.schedule.every},
-                                     {"unit", t.schedule.unit},
-                                     {"fromDone", t.schedule.fromDone}}},
-            {"months", months},
+            {"schedule", scheduleJson(t.schedule)},
+            {"months", monthsJson(t.months)},
             {"due", dateText(t.due)},
             {"snoozedUntil", dateText(t.snoozedUntil)},
             {"today", dateText(t.today)},
@@ -98,6 +107,7 @@ QByteArray Store::toJson() const {
                                            {"note", c.note}});
     return QJsonDocument(QJsonObject{{"needful", FormatVersion},
                                      {"contexts", contextArray},
+                                     {"routines", routineArray},
                                      {"tasks", taskArray},
                                      {"completions", completionArray}})
         .toJson(QJsonDocument::Indented);
@@ -121,23 +131,46 @@ bool Store::fromJson(const QByteArray &json, QString *error) {
         const QJsonObject o = value.toObject();
         loaded.contexts.append({o.value("id").toInt(), o.value("name").toString(), o.value("parent").toInt()});
     }
+    auto readSchedule = [](const QJsonObject &s) {
+        Schedule schedule;
+        const QString kind = s.value("kind").toString("every");
+        schedule.kind = kind == "once" ? Schedule::Once : kind == "ask" ? Schedule::Ask : Schedule::Every;
+        schedule.every = std::max(1, s.value("every").toInt(1));
+        schedule.unit = s.value("unit").toString("week");
+        schedule.fromDone = s.value("fromDone").toBool(true);
+        return schedule;
+    };
+    auto readMonths = [](const QJsonValue &value) {
+        QList<int> months;
+        for (const auto &m : value.toArray())
+            if (m.toInt() >= 1 && m.toInt() <= 12)
+                months.append(m.toInt());
+        return months;
+    };
+    for (const auto &value : root.value("routines").toArray()) {
+        const QJsonObject o = value.toObject();
+        Routine r;
+        r.id = o.value("id").toInt();
+        r.title = o.value("title").toString();
+        r.notes = o.value("notes").toString();
+        r.priority = std::clamp(o.value("priority").toInt(2), 1, 4);
+        r.schedule = readSchedule(o.value("schedule").toObject());
+        r.months = readMonths(o.value("months"));
+        loaded.routines.append(r);
+    }
     for (const auto &value : root.value("tasks").toArray()) {
         const QJsonObject o = value.toObject();
-        const QJsonObject s = o.value("schedule").toObject();
         Task t;
         t.id = o.value("id").toInt();
+        t.routine = o.value("routine").toInt();
+        for (const auto &field : o.value("overrides").toArray())
+            t.overrides.append(field.toString());
         t.title = o.value("title").toString();
         t.notes = o.value("notes").toString();
         t.context = o.value("context").toInt();
         t.priority = std::clamp(o.value("priority").toInt(2), 1, 4);
-        const QString kind = s.value("kind").toString("every");
-        t.schedule.kind = kind == "once" ? Schedule::Once : kind == "ask" ? Schedule::Ask : Schedule::Every;
-        t.schedule.every = std::max(1, s.value("every").toInt(1));
-        t.schedule.unit = s.value("unit").toString("week");
-        t.schedule.fromDone = s.value("fromDone").toBool(true);
-        for (const auto &m : o.value("months").toArray())
-            if (m.toInt() >= 1 && m.toInt() <= 12)
-                t.months.append(m.toInt());
+        t.schedule = readSchedule(o.value("schedule").toObject());
+        t.months = readMonths(o.value("months"));
         t.due = readDate(o.value("due"));
         t.snoozedUntil = readDate(o.value("snoozedUntil"));
         t.today = readDate(o.value("today"));
@@ -170,6 +203,29 @@ const Context *Store::context(int id) const {
         if (c.id == id)
             return &c;
     return nullptr;
+}
+
+Routine *Store::routine(int id) {
+    for (auto &r : routines)
+        if (id && r.id == id)
+            return &r;
+    return nullptr;
+}
+
+const Routine *Store::routine(int id) const { return const_cast<Store *>(this)->routine(id); }
+
+QList<int> Store::copies(int routineId) const {
+    QList<const Task *> found;
+    for (const auto &t : tasks)
+        if (routineId && t.routine == routineId)
+            found.append(&t);
+    std::sort(found.begin(), found.end(), [this](auto a, auto b) {
+        return contextPath(a->context).localeAwareCompare(contextPath(b->context)) < 0;
+    });
+    QList<int> ids;
+    for (const Task *t : found)
+        ids.append(t->id);
+    return ids;
 }
 
 QString Store::contextPath(int id) const {
@@ -320,7 +376,61 @@ bool Store::removeContext(int id) {
 }
 
 bool Store::removeTask(int id) {
-    return tasks.removeIf([id](const Task &t) { return t.id == id; }) > 0;
+    const Task *t = task(id);
+    if (!t)
+        return false;
+    const int routineId = t->routine;
+    tasks.removeIf([id](const Task &t) { return t.id == id; });
+    if (routineId && copies(routineId).isEmpty())
+        routines.removeIf([routineId](const Routine &r) { return r.id == routineId; });
+    return true;
+}
+
+int Store::makeRoutine(int taskId) {
+    Task *t = task(taskId);
+    if (!t)
+        return 0;
+    if (t->routine)
+        return t->routine;
+    // The task's notes become the shared notes; it starts with none of its own.
+    Routine r{highestId(routines) + 1, t->title, t->notes, t->priority, t->schedule, t->months};
+    routines.append(r);
+    t->routine = r.id;
+    t->notes.clear();
+    t->overrides.clear();
+    return r.id;
+}
+
+int Store::addCopy(int routineId, int contextId, const QDate &due, const QDate &today) {
+    const Routine *r = routine(routineId);
+    if (!r)
+        return 0;
+    Task copy;
+    copy.routine = routineId;
+    copy.title = r->title;
+    copy.context = context(contextId) ? contextId : 0;
+    copy.priority = r->priority;
+    copy.schedule = r->schedule;
+    copy.months = r->months;
+    copy.due = due;
+    return addTask(copy, today);
+}
+
+void Store::syncRoutine(int routineId) {
+    const Routine *r = routine(routineId);
+    if (!r)
+        return;
+    for (auto &t : tasks) {
+        if (t.routine != routineId)
+            continue;
+        t.title = r->title;
+        if (!t.overrides.contains("schedule"))
+            t.schedule = r->schedule;
+        if (!t.overrides.contains("priority"))
+            t.priority = r->priority;
+        if (!t.overrides.contains("months"))
+            t.months = r->months;
+    }
 }
 
 bool Store::complete(int id, const QDateTime &at, const QString &note, const QDate &askedNext) {

@@ -10,39 +10,71 @@ Dialog {
     modal: true
     width: Math.min(parent.width - 48, 580)
     height: Math.min(parent.height - 48, implicitHeight)
-    title: taskId ? qsTr("Edit task") : qsTr("New task")
+    title: isNew ? qsTr("New task") : isCopy ? qsTr("Edit routine") : qsTr("Edit task")
     Material.roundedScale: theme.radius
 
     property int taskId: 0
+    property var task: ({})
     property var months: []
+    property var ticked: []      // Context ids with a copy, or the one context.
+    property string scope: "all" // For a routine's copy: "all" or "only".
+    readonly property bool isCopy: (task.routine || 0) > 0
+    readonly property bool onlyThis: isCopy && scope === "only"
+    readonly property bool isNew: taskId === 0
+    // Just the innermost name: "Tacoma", not "Automotive › Tacoma".
+    readonly property string contextName: (task.contextPath || "").split(" › ").slice(-1)[0]
 
-    function openFor(task) {
+    // Fills the fields from a task, or from its routine's shared values.
+    function load(source) {
+        notesField.text = source.notes || ""
+        priorityBox.currentIndex = (source.priority || 2) - 1
+        kindBox.currentIndex = Math.max(0, ["every", "ask", "once"].indexOf(source.scheduleKind || "every"))
+        everyBox.value = source.every || 1
+        unitBox.currentIndex = Math.max(0, ["day", "week", "month", "year"].indexOf(source.unit || "week"))
+        fromDoneBox.currentIndex = source.fromDone === false ? 1 : 0
+        months = (source.months || []).slice()
+        allYear.checked = months.length === 0
+    }
+
+    function setScope(value) {
+        scope = value
+        load(onlyThis ? task : task.shared)
+        // A copy's own due date is edited only here; new contexts start on the chosen day.
+        due.date = onlyThis ? task.due : backend.dateAfter(0, "day")
+    }
+
+    function openFor(source) {
+        task = source.id ? backend.task(source.id) : source
         taskId = task.id || 0
         titleField.text = task.title || ""
-        notesField.text = task.notes || ""
-        const contextIndex = contextBox.model.findIndex(c => c.id === (task.context || 0))
-        contextBox.currentIndex = Math.max(0, contextIndex)
-        priorityBox.currentIndex = (task.priority || 2) - 1
-        const kind = task.scheduleKind || "every"
-        kindBox.currentIndex = ["every", "ask", "once"].indexOf(kind)
-        everyBox.value = task.every || 1
-        unitBox.currentIndex = Math.max(0, ["day", "week", "month", "year"].indexOf(task.unit || "week"))
-        fromDoneBox.currentIndex = task.fromDone === false ? 1 : 0
-        months = (task.months || []).slice()
-        allYear.checked = months.length === 0
-        due.date = task.due || backend.dateAfter(0, "day")
+        ticked = isCopy ? (task.contexts || []).slice() : (task.context ? [task.context] : [])
+        if (isCopy) {
+            setScope("all")
+        } else {
+            scope = "all"
+            load(task)
+            due.date = task.due || backend.dateAfter(0, "day")
+        }
         open()
         titleField.forceActiveFocus()
     }
 
+    function toggleContext(id) {
+        const list = ticked.slice()
+        const at = list.indexOf(id)
+        if (at >= 0) list.splice(at, 1); else list.push(id)
+        ticked = list
+    }
+
     function save() {
-        if (titleField.text.trim() === "")
+        if (titleField.text.trim() === "" || (isCopy && !onlyThis && ticked.length === 0))
             return
         backend.saveTask({
             id: taskId,
+            scope: scope,
             title: titleField.text,
             notes: notesField.text,
-            context: contextBox.model[contextBox.currentIndex].id,
+            contexts: ticked,
             priority: priorityBox.currentIndex + 1,
             scheduleKind: ["every", "ask", "once"][kindBox.currentIndex],
             every: everyBox.value,
@@ -70,21 +102,107 @@ Dialog {
             columnSpacing: 16
             rowSpacing: 10
 
+            // A routine's copy is edited for every context, or for this one alone.
+            RowLayout {
+                visible: editor.isCopy
+                Layout.columnSpan: 2
+                Layout.fillWidth: true
+                spacing: 4
+                Button {
+                    text: qsTr("All %n contexts", "", editor.ticked.length)
+                    checkable: true
+                    checked: !editor.onlyThis
+                    flat: !checked
+                    highlighted: checked
+                    onClicked: editor.setScope("all")
+                }
+                Button {
+                    text: qsTr("Only %1").arg(editor.contextName)
+                    checkable: true
+                    checked: editor.onlyThis
+                    flat: !checked
+                    highlighted: checked
+                    onClicked: editor.setScope("only")
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: implicitWidth
+                    contentItem: Label {
+                        text: parent.text
+                        elide: Text.ElideMiddle
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                        color: parent.checked ? theme.accentForeground : "#ececf0"
+                        font: parent.font
+                    }
+                }
+            }
+
             TextField {
                 id: titleField
+                visible: !editor.onlyThis
                 Layout.columnSpan: 2
                 Layout.fillWidth: true
                 placeholderText: qsTr("What needs doing")
                 onAccepted: editor.save()
             }
 
-            Label { text: qsTr("Context"); color: "#a0a0a8" }
-            ComboBox {
-                id: contextBox
+            Label {
+                visible: editor.onlyThis
+                Layout.columnSpan: 2
                 Layout.fillWidth: true
-                textRole: "label"
-                model: [{ id: 0, label: qsTr("No context") }].concat(
-                    backend.contexts.map(c => ({ id: c.id, label: "    ".repeat(c.depth) + c.name })))
+                wrapMode: Text.Wrap
+                color: "#a0a0a8"
+                text: qsTr("Changes here apply to %1 alone. Anything set differently from the routine stays that way when the routine changes.").arg(editor.contextName)
+            }
+
+            Label {
+                visible: !editor.onlyThis
+                text: qsTr("Contexts")
+                color: "#a0a0a8"
+                Layout.alignment: Qt.AlignTop
+                Layout.topMargin: 10
+            }
+            ColumnLayout {
+                visible: !editor.onlyThis
+                Layout.fillWidth: true
+                spacing: 0
+                Label {
+                    visible: backend.contexts.length === 0
+                    text: qsTr("No contexts yet. Add one with C.")
+                    color: "#6e6e78"
+                    Layout.topMargin: 10
+                }
+                Flow {
+                    Layout.fillWidth: true
+                    spacing: 2
+                    Repeater {
+                        model: backend.contexts
+                        Button {
+                            required property var modelData
+                            text: modelData.depth > 0 ? modelData.path.split(" › ").slice(-1)[0] : modelData.name
+                            checkable: true
+                            checked: editor.ticked.indexOf(modelData.id) >= 0
+                            flat: !checked
+                            highlighted: checked
+                            font.pixelSize: 12
+                            onClicked: editor.toggleContext(modelData.id)
+                            ToolTip.visible: hovered && modelData.depth > 0
+                            ToolTip.delay: 500
+                            ToolTip.text: modelData.path
+                        }
+                    }
+                }
+                Label {
+                    Layout.fillWidth: true
+                    wrapMode: Text.Wrap
+                    font.pixelSize: 12
+                    color: editor.isCopy && editor.ticked.length === 0 ? "#ff7a7a" : "#85858e"
+                    text: editor.isCopy && editor.ticked.length === 0
+                          ? qsTr("Tick at least one context, or delete the routine instead.")
+                          : editor.ticked.length > 1
+                          ? qsTr("Each context gets its own copy, with its own due date and history.")
+                          : editor.ticked.length === 0 ? qsTr("No context") : ""
+                    visible: text !== ""
+                }
             }
 
             Label { text: qsTr("Priority"); color: "#a0a0a8" }
@@ -162,7 +280,10 @@ Dialog {
             }
 
             Label {
-                text: editor.taskId ? qsTr("Next due") : qsTr("First due")
+                text: editor.isCopy && !editor.onlyThis ? qsTr("First due for newly ticked contexts")
+                    : editor.isNew ? qsTr("First due") : qsTr("Next due")
+                wrapMode: Text.Wrap
+                Layout.maximumWidth: 120
                 color: "#a0a0a8"
                 Layout.alignment: Qt.AlignTop
                 Layout.topMargin: 10
@@ -174,13 +295,22 @@ Dialog {
                 Layout.columnSpan: 2
                 Layout.fillWidth: true
                 Layout.minimumHeight: 70
-                placeholderText: qsTr("Notes: part numbers, how-tos, where the filter lives")
+                placeholderText: editor.onlyThis ? qsTr("Notes for %1 only").arg(editor.contextName)
+                               : editor.isCopy || editor.ticked.length > 1 ? qsTr("Notes shared by every context")
+                               : qsTr("Notes: part numbers, how-tos, where the filter lives")
                 wrapMode: TextEdit.Wrap
             }
         }
     }
 
     footer: DialogButtonBox {
+        Button {
+            visible: editor.onlyThis
+            text: qsTr("Reset to shared")
+            flat: true
+            DialogButtonBox.buttonRole: DialogButtonBox.ResetRole
+            onClicked: { const notes = notesField.text; editor.load(editor.task.shared); notesField.text = notes }
+        }
         Button { text: qsTr("Cancel"); flat: true; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
         Button {
             text: editor.taskId ? qsTr("Save") : qsTr("Add")

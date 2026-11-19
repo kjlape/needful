@@ -377,10 +377,26 @@ QVariantMap Backend::describe(const Task &t, const QDate &today) const {
         months.append(m);
     const Completion *last = m_store.lastDone(t.id);
     const Store::State state = m_store.state(t, today);
+    // A routine's other copies, so the window can say where else it applies.
+    const Routine *routine = m_store.routine(t.routine);
+    QVariantList copies, contexts{t.context};
+    for (int copyId : m_store.copies(t.routine)) {
+        const Task *copy = m_store.task(copyId);
+        if (copyId != t.id) {
+            copies.append(QVariantMap{{"id", copyId}, {"contextPath", m_store.contextPath(copy->context)},
+                                      {"dueText", dueText(*copy, today)}});
+            contexts.append(copy->context);
+        }
+    }
     return {{"kind", "task"},
             {"id", t.id},
             {"title", t.title},
             {"notes", t.notes},
+            {"sharedNotes", routine ? routine->notes : QString()},
+            {"routine", t.routine},
+            {"overrides", t.overrides},
+            {"copies", copies},
+            {"contexts", contexts},
             {"context", t.context},
             {"contextPath", m_store.contextPath(t.context)},
             {"priority", t.priority},
@@ -424,44 +440,153 @@ QVariantMap Backend::task(int id) const {
     for (const auto &c : m_store.history(id))
         history.append(describe(c));
     map["history"] = history;
+    if (const Routine *r = m_store.routine(t->routine)) {
+        QVariantList months;
+        for (int m : r->months)
+            months.append(m);
+        map["shared"] = QVariantMap{{"title", r->title},
+                                    {"notes", r->notes},
+                                    {"priority", r->priority},
+                                    {"scheduleKind", kindName(r->schedule.kind)},
+                                    {"every", r->schedule.every},
+                                    {"unit", r->schedule.unit},
+                                    {"fromDone", r->schedule.fromDone},
+                                    {"months", months}};
+    }
     return map;
 }
 
+namespace {
+// The editable fields of a task or routine, read from the editor's map.
+struct Fields {
+    int priority = 2;
+    Schedule schedule;
+    QList<int> months;
+};
+
+Fields readFields(const QVariantMap &fields) {
+    Fields f;
+    f.priority = std::clamp(fields.value("priority", 2).toInt(), 1, 4);
+    f.schedule.kind = kindFrom(fields.value("scheduleKind").toString());
+    f.schedule.every = std::max(1, fields.value("every", 1).toInt());
+    const QString unit = fields.value("unit").toString();
+    f.schedule.unit = QStringList{"day", "week", "month", "year"}.contains(unit) ? unit : "week";
+    f.schedule.fromDone = fields.value("fromDone", true).toBool();
+    for (const auto &m : fields.value("months").toList())
+        if (m.toInt() >= 1 && m.toInt() <= 12 && !f.months.contains(m.toInt()))
+            f.months.append(m.toInt());
+    std::sort(f.months.begin(), f.months.end());
+    if (f.months.size() == 12)
+        f.months.clear();
+    return f;
+}
+
+bool sameSchedule(const Schedule &a, const Schedule &b) {
+    return a.kind == b.kind && a.every == b.every && a.unit == b.unit && a.fromDone == b.fromDone;
+}
+
+QList<int> sorted(QList<int> list) {
+    std::sort(list.begin(), list.end());
+    return list;
+}
+}
+
+// One save for every way the editor is used. "contexts" lists the contexts
+// ticked; more than one makes a shared routine with a copy in each. For a
+// copy, "scope" says whether the edit is to the routine ("all") or to this
+// copy alone ("only"), where any field that differs from the routine becomes
+// an override.
 int Backend::saveTask(const QVariantMap &fields) {
     const QString title = fields.value("title").toString().trimmed();
     if (title.isEmpty())
         return 0;
     int id = fields.value("id").toInt();
+    const Fields f = readFields(fields);
+    const QString notes = fields.value("notes").toString().trimmed();
+    const QDate due = QDate::fromString(fields.value("due").toString(), Qt::ISODate);
+    QList<int> contexts;
+    for (const auto &value : fields.value("contexts").toList())
+        if (m_store.context(value.toInt()) && !contexts.contains(value.toInt()))
+            contexts.append(value.toInt());
+    // Older callers name one context.
+    if (contexts.isEmpty() && m_store.context(fields.value("context").toInt()))
+        contexts.append(fields.value("context").toInt());
+
     change([&] {
-        Task draft;
-        if (id) {
-            const Task *existing = m_store.task(id);
-            if (!existing)
-                return false;
-            draft = *existing;
+        Task *existing = id ? m_store.task(id) : nullptr;
+        if (id && !existing)
+            return false;
+
+        // A copy edited on its own: overrides are whatever differs.
+        if (existing && existing->routine && fields.value("scope").toString() == "only") {
+            const Routine *r = m_store.routine(existing->routine);
+            existing->priority = f.priority;
+            existing->schedule = f.schedule;
+            existing->months = f.months;
+            existing->notes = notes;
+            existing->overrides.clear();
+            if (!sameSchedule(f.schedule, r->schedule)) existing->overrides.append("schedule");
+            if (f.priority != r->priority) existing->overrides.append("priority");
+            if (sorted(f.months) != sorted(r->months)) existing->overrides.append("months");
+            if (due.isValid())
+                existing->due = due;
+            return true;
         }
+
+        // The whole routine: shared fields, and which contexts have a copy.
+        if (existing && existing->routine) {
+            const int routineId = existing->routine;
+            Routine *r = m_store.routine(routineId);
+            r->title = title;
+            r->notes = notes;
+            r->priority = f.priority;
+            r->schedule = f.schedule;
+            r->months = f.months;
+            if (!contexts.isEmpty()) {
+                // Add before removing, so the routine never runs out of copies.
+                const QList<int> before = m_store.copies(routineId);
+                QList<int> have;
+                for (int copyId : before)
+                    have.append(m_store.task(copyId)->context);
+                for (int contextId : contexts)
+                    if (!have.contains(contextId))
+                        m_store.addCopy(routineId, contextId, due.isValid() ? due : today(), today());
+                for (int copyId : before)
+                    if (!contexts.contains(m_store.task(copyId)->context))
+                        m_store.removeTask(copyId); // Its history stays.
+            }
+            m_store.syncRoutine(routineId);
+            if (!m_store.task(id)) {
+                const QList<int> left = m_store.copies(routineId);
+                id = left.isEmpty() ? 0 : left.first();
+            }
+            return true;
+        }
+
+        // A task of its own, new or not; more than one context makes it a routine.
+        Task draft = existing ? *existing : Task();
         draft.title = title;
-        draft.notes = fields.value("notes").toString().trimmed();
-        draft.context = m_store.context(fields.value("context").toInt()) ? fields.value("context").toInt() : 0;
-        draft.priority = std::clamp(fields.value("priority", 2).toInt(), 1, 4);
-        draft.schedule.kind = kindFrom(fields.value("scheduleKind").toString());
-        draft.schedule.every = std::max(1, fields.value("every", 1).toInt());
-        const QString unit = fields.value("unit").toString();
-        draft.schedule.unit = QStringList{"day", "week", "month", "year"}.contains(unit) ? unit : "week";
-        draft.schedule.fromDone = fields.value("fromDone", true).toBool();
-        draft.months.clear();
-        for (const auto &m : fields.value("months").toList())
-            if (m.toInt() >= 1 && m.toInt() <= 12 && !draft.months.contains(m.toInt()))
-                draft.months.append(m.toInt());
-        if (draft.months.size() == 12)
-            draft.months.clear();
-        const QDate due = QDate::fromString(fields.value("due").toString(), Qt::ISODate);
+        draft.notes = notes;
+        draft.priority = f.priority;
+        draft.schedule = f.schedule;
+        draft.months = f.months;
         if (due.isValid())
             draft.due = due;
-        if (id) {
-            *m_store.task(id) = draft;
-        } else {
+        if (contexts.isEmpty())
+            draft.context = 0;
+        else if (!contexts.contains(draft.context) || !existing)
+            draft.context = contexts.first();
+        if (existing)
+            *existing = draft;
+        else
             id = m_store.addTask(draft, today());
+
+        if (contexts.size() > 1) {
+            const int routineId = m_store.makeRoutine(id);
+            const int own = m_store.task(id)->context;
+            for (int contextId : contexts)
+                if (contextId != own)
+                    m_store.addCopy(routineId, contextId, due.isValid() ? due : today(), today());
         }
         return true;
     });

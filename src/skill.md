@@ -11,6 +11,7 @@ no display, takes `--json`, exits 0 or 1, and writes errors to stderr.
 
 - `needful list [--view needful|today|upcoming|all] [--context "Automotive/White Honda CR-V"] --json`
 - `needful add "Change the air filter" --context Home --every 1m [--priority high] [--months 5-9] [--fixed] [--ask] [--due 2026-05-01]`
+- Repeat `--context` to add a routine shared by several contexts (one oil change for every vehicle); each context gets its own copy with its own id, due date, and history.
 - `needful done <id> --note "5W-30, 84,210 miles"` (tasks made with `--ask` also take `--next YYYY-MM-DD`; without it they retire)
 - `needful snooze <id> <days>`, `needful today <id>` (pull into today, or put back)
 - `needful history [--context C] [--task id] [--search oil] --json` answers "when did I last…"

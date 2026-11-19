@@ -128,7 +128,7 @@ int list(const QStringList &arguments) {
 }
 
 int add(const QStringList &arguments) {
-    Command command("add", "Add a task.");
+    Command command("add", "Add a task. Give --context more than once to share it as a routine, with a copy in each.");
     command.parser.addPositionalArgument("title", "What needs doing", "<title>");
     command.context();
     command.parser.addOption({"priority", "low, normal (the default), high, or urgent", "priority"});
@@ -146,11 +146,16 @@ int add(const QStringList &arguments) {
     Backend backend(command.dataPath());
     if (!backend.error().isEmpty())
         return fail(backend.error());
-    const int context = contextOption(command, backend);
-    if (context < 0)
-        return 1;
+    // Several --context options make a routine with a copy in each.
+    QVariantList contexts;
+    for (const QString &name : command.parser.values("context")) {
+        const int id = backend.store().findContext(name);
+        if (id < 0)
+            return fail(QString("No context named %1. See: needful contexts").arg(name));
+        contexts.append(id);
+    }
 
-    QVariantMap fields{{"title", title}, {"notes", command.parser.value("notes")}, {"context", context},
+    QVariantMap fields{{"title", title}, {"notes", command.parser.value("notes")}, {"contexts", contexts},
                        {"scheduleKind", "once"}, {"fromDone", !command.parser.isSet("fixed")}};
     const int priority = priorityFrom(command.parser.value("priority"));
     if (!priority)
@@ -182,10 +187,17 @@ int add(const QStringList &arguments) {
     const int id = backend.saveTask(fields);
     if (!id)
         return fail(backend.error().isEmpty() ? "Could not add the task." : backend.error());
+    // A routine reports every copy it made.
+    const int routine = backend.store().task(id)->routine;
+    const QList<int> ids = routine ? backend.store().copies(routine) : QList<int>{id};
+    QJsonArray array;
+    for (int each : ids)
+        array.append(taskJson(backend.task(each)));
     if (command.wantsJson())
-        printJson(taskJson(backend.task(id)));
+        printJson(routine ? QJsonValue(array) : array.first());
     else
-        print(stdout, "Added " + taskLine(backend.task(id)));
+        for (int each : ids)
+            print(stdout, "Added " + taskLine(backend.task(each)));
     return 0;
 }
 

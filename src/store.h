@@ -5,6 +5,7 @@
 #include <QJsonObject>
 #include <QList>
 #include <QString>
+#include <QStringList>
 
 // Everything Needful knows, and the rules that rank it. The store needs no
 // display, so the window, the command line, and the tests all share it, and
@@ -28,8 +29,23 @@ struct Schedule {
     bool fromDone = true;
 };
 
+// A routine shared by several contexts (one oil change for every vehicle).
+// Each context gets its own Task, a copy, with its own due date, snooze, and
+// history; the copies take the routine's title, and its schedule, priority,
+// and season unless they override them.
+struct Routine {
+    int id = 0;
+    QString title;
+    QString notes; // Shared; each copy's own notes add to these.
+    int priority = 2;
+    Schedule schedule;
+    QList<int> months;
+};
+
 struct Task {
     int id = 0;
+    int routine = 0;         // 0 for a task of its own.
+    QStringList overrides;   // For a copy: "schedule", "priority", "months".
     QString title;
     QString notes;
     int context = 0;
@@ -59,6 +75,7 @@ public:
     enum State { Due, Upcoming, Snoozed, OutOfSeason, Archived };
 
     QList<Context> contexts;
+    QList<Routine> routines;
     QList<Task> tasks;
     QList<Completion> completions;
 
@@ -73,6 +90,9 @@ public:
     Task *task(int id);
     const Task *task(int id) const;
     const Context *context(int id) const;
+    Routine *routine(int id);
+    const Routine *routine(int id) const;
+    QList<int> copies(int routineId) const; // Task ids, in context order.
     QString contextPath(int id) const;          // "Automotive › White Honda CR-V"
     QList<int> withDescendants(int id) const;   // The context and everything under it.
     bool inContext(int contextId, int filter) const;
@@ -92,7 +112,15 @@ public:
     int addTask(Task task, const QDate &today);
     int addContext(const QString &name, int parent);
     bool removeContext(int id); // Its tasks and children move up to its parent.
-    bool removeTask(int id);    // Its history stays.
+    bool removeTask(int id);    // Its history stays; a routine goes with its last copy.
+
+    // Routines. Making one turns the task into its first copy, keeping its
+    // history and due date, and adds a copy for each other context.
+    int makeRoutine(int taskId);
+    int addCopy(int routineId, int context, const QDate &due, const QDate &today);
+    // Pushes the routine's title and shared fields to its copies, except
+    // where a copy overrides them.
+    void syncRoutine(int routineId);
     // Records the completion and schedules the next time: for Ask tasks the
     // caller's nextDue, where an invalid date retires the task.
     bool complete(int id, const QDateTime &at, const QString &note, const QDate &askedNext = {});
