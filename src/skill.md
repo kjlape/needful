@@ -1,0 +1,20 @@
+---
+name: needful
+description: Read and update the person's Needful list (routine chores and recurring tasks ranked by how needful they are, grouped by context such as Home, a vehicle, work, or a channel) with the needful command. Use when asked what needs doing, to add or finish a chore, to log what was done on a car or project, or when the last time something was done matters.
+---
+
+# Needful
+
+`needful` keeps routine tasks ranked by how needful they are: priority, grown
+by how late each task is relative to its own rhythm. Every command below needs
+no display, takes `--json`, exits 0 or 1, and writes errors to stderr.
+
+- `needful list [--view needful|today|upcoming|all] [--context "Automotive/White Honda CR-V"] --json`
+- `needful add "Change the air filter" --context Home --every 1m [--priority high] [--months 5-9] [--fixed] [--ask] [--due 2026-05-01]`
+- `needful done <id> --note "5W-30, 84,210 miles"` (tasks made with `--ask` also take `--next YYYY-MM-DD`; without it they retire)
+- `needful snooze <id> <days>`, `needful today <id>` (pull into today, or put back)
+- `needful history [--context C] [--task id] [--search oil] --json` answers "when did I last…"
+- `needful contexts [add "Parent/Child"] --json`
+
+Ask before marking things done or deleting on the person's behalf. History is
+the person's record; never remove entries from it.

@@ -1,0 +1,17 @@
+<RCC>
+    <qresource prefix="/">
+        <file alias="Main.qml">Main.qml</file>
+        <file alias="Sidebar.qml">Sidebar.qml</file>
+        <file alias="TaskRow.qml">TaskRow.qml</file>
+        <file alias="CompletionRow.qml">CompletionRow.qml</file>
+        <file alias="TaskDetail.qml">TaskDetail.qml</file>
+        <file alias="TaskEditor.qml">TaskEditor.qml</file>
+        <file alias="CompleteDialog.qml">CompleteDialog.qml</file>
+        <file alias="SnoozeDialog.qml">SnoozeDialog.qml</file>
+        <file alias="ContextDialog.qml">ContextDialog.qml</file>
+        <file alias="DateStepper.qml">DateStepper.qml</file>
+        <file alias="HelpOverlay.qml">HelpOverlay.qml</file>
+        <file alias="skill.md">skill.md</file>
+        <file alias="i18n/en.json">i18n/en.json</file>
+    </qresource>
+</RCC>

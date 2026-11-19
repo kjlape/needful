@@ -1,0 +1,15 @@
+{
+  "%n days ago": { "one": "%n day ago", "other": "%n days ago" },
+  "%n months ago": { "one": "%n month ago", "other": "%n months ago" },
+  "%n years ago": { "one": "%n year ago", "other": "%n years ago" },
+  "%n days late": { "one": "%n day late", "other": "%n days late" },
+  "Due in %n days": { "one": "Due in %n day", "other": "Due in %n days" },
+  "Every %n days": { "one": "Every day", "other": "Every %n days" },
+  "Every %n weeks": { "one": "Every week", "other": "Every %n weeks" },
+  "Every %n months": { "one": "Every month", "other": "Every %n months" },
+  "Every %n years": { "one": "Every year", "other": "Every %n years" },
+  "days": { "one": "day", "other": "days" },
+  "weeks": { "one": "week", "other": "weeks" },
+  "months": { "one": "month", "other": "months" },
+  "years": { "one": "year", "other": "years" }
+}

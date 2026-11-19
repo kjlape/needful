@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Needful
+Comment=Routine tasks, most needful first
+Exec=needful open
+Icon=needful
+Terminal=false
+Categories=Utility;Office;ProjectManagement;
+Keywords=todo;tasks;reminders;routine;chores;maintenance;
+StartupWMClass=needful
