@@ -44,8 +44,25 @@ bool dataOption(const QCommandLineParser &parser, QString *path) {
     return !path->isEmpty();
 }
 
-const QString ServeUnit = "needful-serve.service";
-const QString TailscaleUnit = "needful-tailscale.service";
+// Your own list keeps the names it always had; another universe's gets
+// its own beside it: needful-serve-hers.service, serve-hers.json, and so on.
+QString suffix(const QString &universe) { return universe.isEmpty() ? QString() : "-" + universe; }
+QString serveUnit(const QString &universe) { return "needful-serve" + suffix(universe) + ".service"; }
+QString tailscaleUnit(const QString &universe) { return "needful-tailscale" + suffix(universe) + ".service"; }
+
+// --universe as a name, empty for your own; false with a message for one
+// this computer doesn't know, unless it's being removed.
+bool universeOption(const QCommandLineParser &parser, QString *universe, bool mayBeGone = false) {
+    *universe = parser.value("universe").trimmed().toLower();
+    if (*universe == Universes::Mine)
+        universe->clear();
+    if (universe->isEmpty())
+        return true;
+    if (mayBeGone ? Universes::validName(*universe) : !Universes().dataPath(*universe).isEmpty())
+        return true;
+    print(stderr, QString("No universe named %1. See: needful universe").arg(*universe));
+    return false;
+}
 
 // One argument for an ExecStart line: quoted when it has spaces, with
 // systemd's % specifiers escaped so a path is taken literally.
@@ -59,22 +76,39 @@ QByteArray unitArgument(const QString &value) {
     return escaped.toUtf8();
 }
 
-QString setupFile() {
-    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/serve.json";
+QString setupFile(const QString &universe) {
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/serve" + suffix(universe) + ".json";
 }
 
-// The port picked at install time, so login and status need not be told again.
-int installedPort() {
-    QFile file(setupFile());
-    if (!file.open(QIODevice::ReadOnly))
+int portIn(const QString &file) {
+    QFile handle(file);
+    if (!handle.open(QIODevice::ReadOnly))
+        return 0;
+    const int port = QJsonDocument::fromJson(handle.readAll()).object().value("port").toInt();
+    return port > 0 && port < 65536 ? port : 0;
+}
+
+// The port picked at install time, so login and status need not be told
+// again. Before it's installed, another universe takes the first port no
+// other install uses, so it never collides with yours.
+int installedPort(const QString &universe) {
+    if (const int port = portIn(setupFile(universe)))
+        return port;
+    if (universe.isEmpty())
         return DefaultServePort;
-    const int port = QJsonDocument::fromJson(file.readAll()).object().value("port").toInt();
-    return port > 0 && port < 65536 ? port : DefaultServePort;
+    QList<int> used{DefaultServePort};
+    const QDir folder(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation));
+    for (const QString &file : folder.entryList({"serve*.json"}, QDir::Files))
+        used.append(portIn(folder.filePath(file)));
+    int port = DefaultServePort;
+    while (used.contains(port))
+        ++port;
+    return port;
 }
 
-bool readPort(const QCommandLineParser &parser, int *port) {
+bool readPort(const QCommandLineParser &parser, int *port, const QString &universe) {
     if (!parser.isSet("port")) {
-        *port = installedPort();
+        *port = installedPort(universe);
         return true;
     }
     bool ok = false;
@@ -89,11 +123,11 @@ bool readPort(const QCommandLineParser &parser, int *port) {
 QString tailscale() { return QStandardPaths::findExecutable("tailscale"); }
 
 // Runs tailscale against Needful's own node, never the system's.
-int runTailscale(const QStringList &arguments, QByteArray *output = nullptr) {
+int runTailscale(const QString &universe, const QStringList &arguments, QByteArray *output = nullptr) {
     QProcess process;
     if (!output)
         process.setProcessChannelMode(QProcess::ForwardedChannels);
-    process.start(tailscale(), QStringList{"--socket=" + tailscaleSocket()} + arguments);
+    process.start(tailscale(), QStringList{"--socket=" + tailscaleSocket(universe)} + arguments);
     if (!process.waitForStarted())
         return -1;
     process.waitForFinished(-1);
@@ -102,11 +136,11 @@ int runTailscale(const QStringList &arguments, QByteArray *output = nullptr) {
     return process.exitStatus() == QProcess::NormalExit ? process.exitCode() : -1;
 }
 
-QString tailnetUrl() {
-    if (tailscale().isEmpty() || !QFileInfo::exists(tailscaleSocket()))
+QString tailnetUrl(const QString &universe) {
+    if (tailscale().isEmpty() || !QFileInfo::exists(tailscaleSocket(universe)))
         return {};
     QByteArray output;
-    if (runTailscale({"status", "--json"}, &output) != 0)
+    if (runTailscale(universe, {"status", "--json"}, &output) != 0)
         return {};
     const QJsonObject status = QJsonDocument::fromJson(output).object();
     QString name = status.value("Self").toObject().value("DNSName").toString();
@@ -157,8 +191,12 @@ int serve(const QStringList &arguments) {
     if (parser.positionalArguments().size() > 1)
         return fail("Unknown serve command " + parser.positionalArguments().value(1) +
                     ". Use: serve, serve install, serve login, serve status, or serve uninstall.");
+    QString universe;
+    if (!universeOption(parser, &universe))
+        return 1;
+    // Another universe's page takes its own port, so it can run beside yours.
     int port = DefaultServePort;
-    if (parser.isSet("port") && !readPort(parser, &port))
+    if ((parser.isSet("port") || !universe.isEmpty()) && !readPort(parser, &port, universe))
         return 1;
     const QHostAddress host(parser.value("host"));
     if (host.isNull())
@@ -197,11 +235,15 @@ int install(const QStringList &arguments) {
     parser.addOption({"universe", "Serve another universe's list instead of yours, like hers", "name"});
     parser.addOption({"tailscale", "Also run a Tailscale node named needful, for https://needful.<tailnet>.ts.net"});
     parser.process(arguments);
+    QString universe;
+    if (!universeOption(parser, &universe))
+        return 1;
     int port = DefaultServePort;
-    if (parser.isSet("port") && !readPort(parser, &port))
+    if (!readPort(parser, &port, universe))
         return 1;
 
     ServeSetup setup;
+    setup.universe = universe;
     setup.needful = QCoreApplication::applicationFilePath();
     setup.port = port;
     QString data;
@@ -214,7 +256,7 @@ int install(const QStringList &arguments) {
         if (setup.tailscaled.isEmpty() || tailscale().isEmpty())
             return fail("--tailscale needs tailscale and tailscaled. On Arch: pacman -S tailscale "
                         "(the system's tailscaled service doesn't need to run).");
-        setup.stateDir = tailscaleStateDirectory();
+        setup.stateDir = tailscaleStateDirectory(universe);
         if (!QDir().mkpath(setup.stateDir))
             return fail("Could not create " + setup.stateDir);
     }
@@ -229,18 +271,20 @@ int install(const QStringList &arguments) {
             return fail("Could not write " + file.fileName());
         print(stdout, "Wrote " + file.fileName());
     }
-    QSaveFile config(setupFile());
-    QDir().mkpath(QFileInfo(setupFile()).absolutePath());
+    QSaveFile config(setupFile(universe));
+    QDir().mkpath(QFileInfo(setupFile(universe)).absolutePath());
     if (config.open(QIODevice::WriteOnly)) {
         config.write(QJsonDocument(QJsonObject{{"port", port}, {"tailscale", setup.tailscale}}).toJson());
         config.commit();
     }
 
-    QString steps = "\nNext:\n  systemctl --user daemon-reload\n  systemctl --user enable --now " + ServeUnit;
+    const QString also = universe.isEmpty() ? QString() : " --universe " + universe;
+    QString steps = "\nNext:\n  systemctl --user daemon-reload\n  systemctl --user enable --now " + serveUnit(universe);
     if (setup.tailscale)
-        steps += " " + TailscaleUnit + "\n  needful serve login       (once, to add the needful node to your tailnet)";
+        steps += " " + tailscaleUnit(universe) + "\n  needful serve login" + also +
+                 "       (once, to add the needful" + suffix(universe) + " node to your tailnet)";
     steps += QString("\n\nThen open http://127.0.0.1:%1/ here").arg(port);
-    steps += setup.tailscale ? ", or https://needful.<your tailnet>.ts.net/ on your phone." : ".";
+    steps += setup.tailscale ? ", or https://needful" + suffix(universe) + ".<your tailnet>.ts.net/ on your phone." : ".";
     print(stdout, steps);
     return 0;
 }
@@ -251,27 +295,33 @@ int login(const QStringList &arguments) {
     parser.addHelpOption();
     parser.addPositionalArgument("serve login", "", "serve login");
     parser.addOption({"port", "The page's port (the installed one)", "port"});
-    parser.addOption({"hostname", "The node's name on the tailnet (needful)", "name", "needful"});
+    parser.addOption({"hostname", "The node's name on the tailnet (needful, or needful-<universe>)", "name"});
+    parser.addOption({"universe", "Another universe's install, like hers", "name"});
     parser.process(arguments);
-    int port = DefaultServePort;
-    if (!readPort(parser, &port))
+    QString universe;
+    if (!universeOption(parser, &universe))
         return 1;
+    int port = DefaultServePort;
+    if (!readPort(parser, &port, universe))
+        return 1;
+    const QString hostname = parser.isSet("hostname") ? parser.value("hostname") : "needful" + suffix(universe);
     if (tailscale().isEmpty())
         return fail("tailscale isn't installed. On Arch: pacman -S tailscale");
-    if (!QFileInfo::exists(tailscaleSocket()))
+    const QString also = universe.isEmpty() ? QString() : " --universe " + universe;
+    if (!QFileInfo::exists(tailscaleSocket(universe)))
         return fail("Needful's Tailscale node isn't running. Install and start it first:\n"
-                    "  needful serve install --tailscale\n"
+                    "  needful serve install --tailscale" + also + "\n"
                     "  systemctl --user daemon-reload\n"
-                    "  systemctl --user enable --now " + TailscaleUnit);
+                    "  systemctl --user enable --now " + tailscaleUnit(universe));
 
-    print(stdout, "Signing the needful node in; open the link tailscale prints if it asks.");
-    if (runTailscale({"up", "--hostname=" + parser.value("hostname")}) != 0)
+    print(stdout, "Signing the " + hostname + " node in; open the link tailscale prints if it asks.");
+    if (runTailscale(universe, {"up", "--hostname=" + hostname}) != 0)
         return fail("tailscale up didn't finish.");
     // Serve settings live in the node's own state, so this runs once.
-    if (runTailscale({"serve", "--bg", "--https=443", QString("http://127.0.0.1:%1").arg(port)}) != 0)
+    if (runTailscale(universe, {"serve", "--bg", "--https=443", QString("http://127.0.0.1:%1").arg(port)}) != 0)
         return fail("tailscale serve didn't finish. HTTPS certificates may need turning on for your tailnet "
                     "(admin console, DNS, HTTPS Certificates).");
-    const QString url = tailnetUrl();
+    const QString url = tailnetUrl(universe);
     print(stdout, url.isEmpty() ? "Done." : "Needful is at " + url);
     return 0;
 }
@@ -283,9 +333,13 @@ int status(const QStringList &arguments) {
     parser.addPositionalArgument("serve status", "", "serve status");
     parser.addOption({"port", "The page's port (the installed one)", "port"});
     parser.addOption({"json", "Print the result as JSON"});
+    parser.addOption({"universe", "Another universe's install, like hers", "name"});
     parser.process(arguments);
+    QString universe;
+    if (!universeOption(parser, &universe))
+        return 1;
     int port = DefaultServePort;
-    if (!readPort(parser, &port))
+    if (!readPort(parser, &port, universe))
         return 1;
 
     QTcpSocket socket;
@@ -299,17 +353,18 @@ int status(const QStringList &arguments) {
         answering = reply.startsWith("HTTP/1.1 200");
     }
     const QString local = QString("http://127.0.0.1:%1/").arg(port);
-    const QString tailnet = tailnetUrl();
+    const QString tailnet = tailnetUrl(universe);
     if (parser.isSet("json")) {
         fputs(QJsonDocument(QJsonObject{{"serving", answering}, {"local", local}, {"tailnet", tailnet}})
                   .toJson().constData(), stdout);
     } else {
         print(stdout, answering ? "Serving at " + local : "Not serving on port " + QString::number(port) +
-                                                              ". Start it with: systemctl --user start " + ServeUnit);
+                                                              ". Start it with: systemctl --user start " + serveUnit(universe));
         if (!tailnet.isEmpty())
             print(stdout, "On your tailnet at " + tailnet);
-        else if (QFileInfo::exists(tailscaleSocket()))
-            print(stdout, "The needful Tailscale node is running but not signed in: needful serve login");
+        else if (QFileInfo::exists(tailscaleSocket(universe)))
+            print(stdout, "The needful" + suffix(universe) + " Tailscale node is running but not signed in: needful serve login" +
+                              (universe.isEmpty() ? QString() : " --universe " + universe));
     }
     return answering ? 0 : 1;
 }
@@ -319,10 +374,14 @@ int uninstall(const QStringList &arguments) {
     parser.setApplicationDescription("Stop and remove the systemd user units.");
     parser.addHelpOption();
     parser.addPositionalArgument("serve uninstall", "", "serve uninstall");
+    parser.addOption({"universe", "Another universe's install, like hers", "name"});
     parser.process(arguments);
+    QString universe;
+    if (!universeOption(parser, &universe, true))
+        return 1;
     QDir units(systemdUserDirectory());
     QStringList present;
-    for (const QString &name : {ServeUnit, TailscaleUnit})
+    for (const QString &name : {serveUnit(universe), tailscaleUnit(universe)})
         if (units.exists(name))
             present.append(name);
     if (present.isEmpty())
@@ -336,8 +395,9 @@ int uninstall(const QStringList &arguments) {
     }
     if (!systemctl.isEmpty())
         QProcess::execute(systemctl, {"--user", "daemon-reload"});
-    if (QFileInfo::exists(tailscaleStateDirectory()))
-        print(stdout, "The needful node's Tailscale state stays in " + tailscaleStateDirectory() +
+    QFile::remove(setupFile(universe));
+    if (QFileInfo::exists(tailscaleStateDirectory(universe)))
+        print(stdout, "The needful" + suffix(universe) + " node's Tailscale state stays in " + tailscaleStateDirectory(universe) +
                           "; delete it, and remove the device in the Tailscale admin console, to forget it.");
     return 0;
 }
@@ -347,12 +407,13 @@ QString systemdUserDirectory() {
     return QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + "/systemd/user";
 }
 
-QString tailscaleStateDirectory() {
-    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/tailscale";
+QString tailscaleStateDirectory(const QString &universe) {
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/tailscale" + suffix(universe);
 }
 
-QString tailscaleSocket() {
-    return QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation) + "/needful-tailscaled.sock";
+QString tailscaleSocket(const QString &universe) {
+    return QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation) + "/needful-tailscaled" + suffix(universe) +
+           ".sock";
 }
 
 QMap<QString, QByteArray> serviceUnits(const ServeSetup &setup) {
@@ -360,8 +421,10 @@ QMap<QString, QByteArray> serviceUnits(const ServeSetup &setup) {
     if (!setup.data.isEmpty())
         exec += " --data " + unitArgument(setup.data);
     QMap<QString, QByteArray> units;
-    units[ServeUnit] = "[Unit]\n"
-                       "Description=Needful on your phone: the page and its API\n"
+    const QString universe = setup.universe;
+    units[serveUnit(universe)] = "[Unit]\n"
+                       "Description=Needful on your phone: the page and its API" +
+                       (universe.isEmpty() ? QByteArray() : ", for " + universe.toUtf8()) + "\n"
                        "After=network.target\n\n"
                        "[Service]\n"
                        "ExecStart=" + exec + "\n"
@@ -372,14 +435,14 @@ QMap<QString, QByteArray> serviceUnits(const ServeSetup &setup) {
     if (setup.tailscale) {
         // A node of its own, in userspace, so the system's Tailscale (and
         // this machine's identity on the tailnet) is left exactly as it was.
-        units[TailscaleUnit] = "[Unit]\n"
+        units[tailscaleUnit(universe)] = "[Unit]\n"
                                "Description=Needful's own Tailscale node, separate from the system's\n"
                                "After=network-online.target\n"
                                "Wants=network-online.target\n\n"
                                "[Service]\n"
                                "ExecStart=" + unitArgument(setup.tailscaled) +
                                " --tun=userspace-networking " + unitArgument("--statedir=" + setup.stateDir) +
-                               " --socket=%t/needful-tailscaled.sock --port=0\n"
+                               " --socket=%t/needful-tailscaled" + suffix(universe).toUtf8() + ".sock --port=0\n"
                                "Restart=on-failure\n"
                                "RestartSec=5\n\n"
                                "[Install]\n"

@@ -169,6 +169,11 @@ console, DNS). Without `--tailscale`, only the first service is installed, and
 the page stays on this machine. `needful serve uninstall` stops and removes
 the services.
 
+Another universe gets a page of its own beside yours: `needful serve install
+--universe hers [--tailscale]` installs `needful-serve-hers.service` on the
+next free port (and a `needful-hers` node), and `login`, `status`, and
+`uninstall` take `--universe` too.
+
 ## Build
 
 ```sh

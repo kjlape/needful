@@ -1016,6 +1016,14 @@ private slots:
             "--statedir=/home/me/.local/share/needful/tailscale --socket=%t/needful-tailscaled.sock --port=0\n"));
         setup.tailscale = false;
         QCOMPARE(serviceUnits(setup).size(), 1);
+
+        // Another universe's units sit beside yours instead of replacing them.
+        setup.universe = "hers";
+        setup.tailscale = true;
+        const auto hers = serviceUnits(setup);
+        QCOMPARE(hers.keys(), (QStringList{"needful-serve-hers.service", "needful-tailscale-hers.service"}));
+        QVERIFY(hers["needful-serve-hers.service"].contains("Description=Needful on your phone: the page and its API, for hers\n"));
+        QVERIFY(hers["needful-tailscale-hers.service"].contains(" --socket=%t/needful-tailscaled-hers.sock --port=0\n"));
     }
 
     void rsyncUnitsAreWritten()
@@ -1097,9 +1105,20 @@ private slots:
         const int result = runServe({"needful", "serve", "install", "--port", "8899"});
         const QString unit = dir.filePath("config/systemd/user/needful-serve.service");
         const bool written = QFile::exists(unit);
-        QFile file(unit);
-        file.open(QIODevice::ReadOnly);
-        const QByteArray contents = file.readAll();
+        const QByteArray contents = contentsOf(unit);
+        // Hers goes beside it, on the first port nothing else uses.
+        QString error;
+        const QString hersData = Universes().add("hers", &error);
+        const int hersResult = runServe({"needful", "serve", "install", "--universe", "hers"});
+        const QByteArray hers = contentsOf(dir.filePath("config/systemd/user/needful-serve-hers.service"));
+        const QByteArray mineAfter = contentsOf(unit);
+        const int unknown = runServe({"needful", "serve", "install", "--universe", "nobody"});
+        // With no systemctl to find, so the test never touches this session's services.
+        const QByteArray path = qgetenv("PATH");
+        qputenv("PATH", dir.filePath("empty").toUtf8());
+        const int removed = runServe({"needful", "serve", "uninstall", "--universe", "hers"});
+        qputenv("PATH", path);
+        const bool hersGone = !QFile::exists(dir.filePath("config/systemd/user/needful-serve-hers.service"));
         auto restore = [](const char *name, const QByteArray &value) {
             if (value.isEmpty()) qunsetenv(name); else qputenv(name, value);
         };
@@ -1108,6 +1127,13 @@ private slots:
         QCOMPARE(result, 0);
         QVERIFY(written);
         QVERIFY(contents.contains(" serve --port 8899\n"));
+        QCOMPARE(hersResult, 0);
+        QVERIFY(hers.contains(" serve --port 8788 --data " + hersData.toUtf8() + "\n"));
+        QCOMPARE(mineAfter, contents);
+        QCOMPARE(unknown, 1);
+        QCOMPARE(removed, 0);
+        QVERIFY(hersGone);
+        QVERIFY(QFile::exists(unit));
     }
 
     void themeFallsBack()

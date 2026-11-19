@@ -16,6 +16,7 @@ struct ServeSetup {
     bool tailscale = false;
     QString tailscaled;  // Absolute path, when tailscale is on.
     QString stateDir;    // The node's own Tailscale state.
+    QString universe;    // Empty for your own list; units for another are named for it.
 };
 
 constexpr int DefaultServePort = 8787;
@@ -23,8 +24,9 @@ constexpr int DefaultServePort = 8787;
 // File name to contents, for ~/.config/systemd/user.
 QMap<QString, QByteArray> serviceUnits(const ServeSetup &setup);
 QString systemdUserDirectory();
-QString tailscaleStateDirectory();
-QString tailscaleSocket();
+// For a universe other than your own (empty), each is its own.
+QString tailscaleStateDirectory(const QString &universe = {});
+QString tailscaleSocket(const QString &universe = {});
 
 // needful sync rsync: a timer that copies each machine's file both ways
 // between this machine's sync folder and another computer's, over SSH. Safe
