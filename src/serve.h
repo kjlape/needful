@@ -26,4 +26,20 @@ QString systemdUserDirectory();
 QString tailscaleStateDirectory();
 QString tailscaleSocket();
 
+// needful sync rsync: a timer that copies each machine's file both ways
+// between this machine's sync folder and another computer's, over SSH. Safe
+// with plain rsync because no file in the folder has two writers, and rsync
+// keeps whichever copy its writer saved last.
+struct RsyncSetup {
+    QString rsync;  // Absolute path of rsync.
+    QString local;  // This machine's sync folder.
+    QString host;   // As ssh knows it: desktop, me@desktop.lan.
+    QString remote; // The folder there; relative paths are from its home.
+    QString every = "5m";
+};
+QMap<QString, QByteArray> rsyncUnits(const RsyncSetup &setup);
+// Pull first, then push.
+QList<QStringList> rsyncCommands(const RsyncSetup &setup);
+extern const QString RsyncService, RsyncTimer;
+
 int runServe(const QStringList &arguments);

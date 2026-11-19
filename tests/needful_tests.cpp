@@ -6,6 +6,8 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QProcess>
+#include <QStandardPaths>
 #include <QTcpSocket>
 
 #include "backend.h"
@@ -946,6 +948,76 @@ private slots:
             "--statedir=/home/me/.local/share/needful/tailscale --socket=%t/needful-tailscaled.sock --port=0\n"));
         setup.tailscale = false;
         QCOMPARE(serviceUnits(setup).size(), 1);
+    }
+
+    void rsyncUnitsAreWritten()
+    {
+        RsyncSetup setup;
+        setup.rsync = "/usr/bin/rsync";
+        setup.local = "/home/me/Sync/needful";
+        setup.host = "desktop";
+        setup.remote = "Sync/needful";
+        setup.every = "10m";
+        const auto units = rsyncUnits(setup);
+        QCOMPARE(units.keys(), (QStringList{"needful-rsync.service", "needful-rsync.timer"}));
+        const QByteArray service = units["needful-rsync.service"];
+        QVERIFY(service.contains("Type=oneshot\n"));
+        QCOMPARE(service.count("ExecStart=/usr/bin/rsync -au "), 2);
+        QVERIFY(service.contains("\"ssh -o BatchMode=yes -o ConnectTimeout=15\""));
+        QVERIFY(service.contains(" desktop:Sync/needful/machines/ /home/me/Sync/needful/machines/\n"));
+        QVERIFY(service.contains(" --mkpath /home/me/Sync/needful/machines/ desktop:Sync/needful/machines/\n"));
+        QVERIFY(units["needful-rsync.timer"].contains("OnUnitInactiveSec=10m\n"));
+        QVERIFY(units["needful-rsync.timer"].contains("WantedBy=timers.target"));
+    }
+
+    // The real commands, with a stand-in for ssh: each side ends up with the
+    // newest copy of every file, and nobody's own file is overwritten by an
+    // older copy of it.
+    void rsyncKeepsTheNewestCopies()
+    {
+        const QString rsync = QStandardPaths::findExecutable("rsync");
+        if (rsync.isEmpty())
+            QSKIP("rsync isn't installed");
+        QTemporaryDir dir;
+        const QString here = dir.filePath("here"), there = dir.filePath("there");
+        QDir().mkpath(here + "/machines");
+        QDir().mkpath(there + "/machines");
+        const QDateTime old(saturday, QTime(9, 0)), recent(saturday, QTime(10, 0));
+        auto put = [](const QString &path, const QByteArray &contents, const QDateTime &at) {
+            write(path, contents);
+            QFile file(path);
+            QVERIFY(file.open(QIODevice::ReadWrite));
+            QVERIFY(file.setFileTime(at, QFileDevice::FileModificationTime));
+        };
+        put(here + "/machines/aaaaaaaaaaaa.json", "here, new", recent);
+        put(there + "/machines/aaaaaaaaaaaa.json", "here, old copy", old);
+        put(there + "/machines/bbbbbbbbbbbb.json", "there, new", recent);
+        put(here + "/machines/bbbbbbbbbbbb.json", "there, old copy", old);
+        put(there + "/machines/cccccccccccc.json", "only there", old);
+        write(there + "/machines/notes.txt", "not Needful's");
+
+        // "ssh <options> host command…" runs the command here instead.
+        const QString fakeSsh = dir.filePath("fake-ssh");
+        write(fakeSsh, "#!/bin/sh\nwhile [ \"$1\" = -o ]; do shift 2; done\nshift\nexec \"$@\"\n");
+        QFile::setPermissions(fakeSsh, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+
+        RsyncSetup setup;
+        setup.rsync = rsync;
+        setup.local = here;
+        setup.host = "desktop";
+        setup.remote = there;
+        for (QStringList command : rsyncCommands(setup)) {
+            const int shell = command.indexOf("-e");
+            QVERIFY(command[shell + 1].startsWith("ssh "));
+            command[shell + 1] = fakeSsh + " -o BatchMode=yes";
+            QCOMPARE(QProcess::execute(command.first(), command.mid(1)), 0);
+        }
+        for (const QString &side : {here, there}) {
+            QCOMPARE(contentsOf(side + "/machines/aaaaaaaaaaaa.json"), QByteArray("here, new"));
+            QCOMPARE(contentsOf(side + "/machines/bbbbbbbbbbbb.json"), QByteArray("there, new"));
+            QCOMPARE(contentsOf(side + "/machines/cccccccccccc.json"), QByteArray("only there"));
+        }
+        QVERIFY(!QFile::exists(here + "/machines/notes.txt"));
     }
 
     void serveInstallWritesIntoTheConfigFolder()

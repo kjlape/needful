@@ -91,6 +91,21 @@ needful sync rename laptop
 needful sync forget old-thinkpad     # stop listing a machine you retired; its changes stay
 ```
 
+No sync tool? Any two computers that can reach each other over SSH can swap
+changes with plain rsync. After `sync setup` on both, run this on one of
+them:
+
+```sh
+needful sync rsync install desktop   # as ssh knows it; swaps every 5 minutes
+needful sync rsync uninstall
+```
+
+It swaps once right away, so a missing SSH key shows up then and not in a
+log, then installs a systemd user timer. It needs a key that works without
+a prompt (`ssh -o BatchMode=yes desktop true`). `--remote-folder` names the
+folder there if it isn't at the same path, and `--every 30s|5m|1h` sets how
+often.
+
 Every machine keeps working fully, online or not, and the open window takes
 in the other machines' changes as the sync tool brings them. Each machine
 writes only its own file in the folder, so the sync tool never has two

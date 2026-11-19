@@ -368,6 +368,47 @@ QMap<QString, QByteArray> serviceUnits(const ServeSetup &setup) {
     return units;
 }
 
+const QString RsyncService = "needful-rsync.service";
+const QString RsyncTimer = "needful-rsync.timer";
+
+QList<QStringList> rsyncCommands(const RsyncSetup &setup) {
+    // -u keeps the receiver's copy when it's newer. Every copy of a file
+    // carries the time its one writer saved it, so clocks that disagree
+    // between computers can't make an old copy look new. Nothing is deleted.
+    const QStringList options{"-au", "--protect-args", "--timeout=60",
+                              "-e", "ssh -o BatchMode=yes -o ConnectTimeout=15",
+                              "--include=/*.json", "--exclude=*"};
+    const QString here = setup.local + "/machines/", there = setup.host + ":" + setup.remote + "/machines/";
+    return {QStringList{setup.rsync} + options + QStringList{there, here},
+            QStringList{setup.rsync} + options + QStringList{"--mkpath", here, there}};
+}
+
+QMap<QString, QByteArray> rsyncUnits(const RsyncSetup &setup) {
+    QByteArray exec;
+    for (const QStringList &command : rsyncCommands(setup)) {
+        QByteArrayList arguments;
+        for (const QString &argument : command)
+            arguments.append(unitArgument(argument));
+        exec += "ExecStart=" + arguments.join(' ') + "\n";
+    }
+    QMap<QString, QByteArray> units;
+    units[RsyncService] = "[Unit]\n"
+                          "Description=Needful: swap machines' changes with " + setup.host.toUtf8() + " over rsync\n"
+                          "After=network-online.target\n"
+                          "Wants=network-online.target\n\n"
+                          "[Service]\n"
+                          "Type=oneshot\n" + exec;
+    units[RsyncTimer] = "[Unit]\n"
+                        "Description=Needful: swap changes with " + setup.host.toUtf8() + " every " +
+                        setup.every.toUtf8() + "\n\n"
+                        "[Timer]\n"
+                        "OnStartupSec=1m\n"
+                        "OnUnitInactiveSec=" + setup.every.toUtf8() + "\n\n"
+                        "[Install]\n"
+                        "WantedBy=timers.target\n";
+    return units;
+}
+
 int runServe(const QStringList &arguments) {
     const QString command = arguments.value(2);
     if (command == "install") return install(arguments);

@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QLocale>
+#include <QProcess>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -436,11 +437,87 @@ QString shortPath(const QString &path) {
 
 QString count(int n) { return QLocale().toString(n); }
 
+// A timer that swaps every machine's file with another computer over rsync
+// and SSH, for keeping in step with no sync tool or service at all.
+int syncRsync(const Command &command, const SyncFolder &folder) {
+    const QString step = command.argument(2), host = command.argument(3);
+    QDir units(systemdUserDirectory());
+    const QString systemctl = QStandardPaths::findExecutable("systemctl");
+    if (step == "uninstall") {
+        if (!units.exists(RsyncService) && !units.exists(RsyncTimer))
+            return fail("Nothing to remove; no rsync timer in " + units.path());
+        if (!systemctl.isEmpty())
+            QProcess::execute(systemctl, {"--user", "disable", "--now", RsyncTimer});
+        for (const QString &name : {RsyncTimer, RsyncService})
+            if (units.remove(name))
+                print(stdout, "Removed " + units.filePath(name));
+        if (!systemctl.isEmpty())
+            QProcess::execute(systemctl, {"--user", "daemon-reload"});
+        return 0;
+    }
+    if (step != "install" || host.isEmpty())
+        return fail("Use needful sync rsync install <host> (as ssh knows it), or needful sync rsync uninstall.");
+
+    RsyncSetup setup;
+    setup.rsync = QStandardPaths::findExecutable("rsync");
+    if (setup.rsync.isEmpty() || QStandardPaths::findExecutable("ssh").isEmpty())
+        return fail("This needs rsync and ssh, here and on " + host + ". On Arch: pacman -S rsync openssh");
+    if (systemctl.isEmpty())
+        return fail("This needs systemd's user services to run the timer.");
+    static const QRegularExpression interval("^[1-9]\\d*(s|m|h)$");
+    setup.every = command.parser.value("every").trimmed();
+    if (!interval.match(setup.every).hasMatch())
+        return fail("--every takes a count and a unit: 30s, 5m, or 1h.");
+    setup.local = folder.folder();
+    setup.host = host;
+    const QString home = QDir::homePath();
+    setup.remote = command.parser.isSet("remote-folder") ? command.parser.value("remote-folder")
+                   : setup.local.startsWith(home + "/")   ? setup.local.mid(home.size() + 1)
+                                                          : setup.local;
+
+    // Once now, so a missing key or folder shows up here and not in a log.
+    print(stdout, "Swapping changes with " + host + "…");
+    fflush(stdout);
+    const QString remoteShown = setup.remote.startsWith('/') ? setup.remote : "~/" + setup.remote;
+    for (const QStringList &run : rsyncCommands(setup)) {
+        QProcess process;
+        process.setProcessChannelMode(QProcess::MergedChannels);
+        process.start(run.first(), run.mid(1));
+        process.waitForFinished(-1);
+        if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0)
+            return fail(QString::fromUtf8(process.readAll()).trimmed() +
+                        "\n\nCouldn't swap changes with " + host + ". Check that:\n"
+                        "  ssh -o BatchMode=yes " + host + " true    works with no password prompt\n"
+                        "  needful sync setup " + remoteShown + "    has been run on " + host +
+                        "\n(or give its folder with --remote-folder)");
+    }
+
+    if (!units.mkpath("."))
+        return fail("Could not create " + units.path());
+    const auto files = rsyncUnits(setup);
+    for (auto it = files.begin(); it != files.end(); ++it) {
+        QSaveFile file(units.filePath(it.key()));
+        if (!file.open(QIODevice::WriteOnly) || file.write(it.value()) < 0 || !file.commit())
+            return fail("Could not write " + file.fileName());
+        print(stdout, "Wrote " + file.fileName());
+    }
+    QProcess::execute(systemctl, {"--user", "daemon-reload"});
+    if (QProcess::execute(systemctl, {"--user", "enable", "--now", RsyncTimer}) != 0)
+        return fail("Could not start the timer: systemctl --user enable --now " + RsyncTimer);
+    print(stdout, QString("Swapping changes with %1 every %2, while this computer is on. "
+                          "Only one of the two computers needs this timer.\n"
+                          "Stop with: needful sync rsync uninstall").arg(host, setup.every));
+    return 0;
+}
+
 int sync(const QStringList &arguments) {
     Command command("sync", "Keep the same Needful on your computers, through a folder a sync tool keeps in step.");
-    command.parser.addPositionalArgument("action", "setup <folder>, status, rename <name>, or forget <machine>",
+    command.parser.addPositionalArgument("action", "setup <folder>, status, rename <name>, forget <machine>, or rsync install <host> / rsync uninstall",
                                          "<action>");
     command.parser.addOption({"name", "With setup: what to call this machine (its host name by default)", "name"});
+    command.parser.addOption({"remote-folder", "With rsync install: the sync folder on the other computer "
+                                               "(the same path as here, from its home folder)", "path"});
+    command.parser.addOption({"every", "With rsync install: how often to swap changes: 30s, 5m, 1h (5m)", "interval", "5m"});
     command.json();
     command.parser.process(arguments);
     const QString action = command.argument(1), argument = command.parser.positionalArguments().mid(2).join(' ');
@@ -529,6 +606,9 @@ int sync(const QStringList &arguments) {
         return 0;
     }
 
+    if (action == "rsync")
+        return syncRsync(command, *folder);
+
     if (action == "rename") {
         QString error;
         if (!folder->rename(argument, &error))
@@ -557,7 +637,8 @@ int sync(const QStringList &arguments) {
                                count(found->records), found->records == 1 ? "change" : "changes"));
         return 0;
     }
-    return fail("Use needful sync setup <folder>, sync status, sync rename <name>, or sync forget <machine>.");
+    return fail("Use needful sync setup <folder>, sync status, sync rename <name>, sync forget <machine>, "
+                "or sync rsync install <host>.");
 }
 
 int help(const QStringList &arguments) {
@@ -586,7 +667,8 @@ QString cliSummary() {
            "  sync setup <folder>              Keep this machine in step through a synced folder\n"
            "  sync status                      When each machine's changes were last seen\n"
            "  sync rename <name>               Change how this machine is shown\n"
-           "  sync forget <machine>            Stop showing a machine you no longer use\n\n"
+           "  sync forget <machine>            Stop showing a machine you no longer use\n"
+           "  sync rsync install <host>        Swap changes with another computer over SSH, no sync tool\n\n"
            "Phone page (needful help serve):\n"
            "  serve [--port 8787]              Serve the page and its API until stopped\n"
            "  serve install [--tailscale]      Keep it running as a systemd user service\n"
