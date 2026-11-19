@@ -111,13 +111,19 @@ QByteArray Store::toJson() const {
                                     {"at", e.at.toString(Qt::ISODateWithMs)},
                                     {"text", e.text},
                                     {"task", e.task}});
-    return QJsonDocument(QJsonObject{{"needful", FormatVersion},
-                                     {"contexts", contextArray},
-                                     {"routines", routineArray},
-                                     {"tasks", taskArray},
-                                     {"completions", completionArray},
-                                     {"log", logArray}})
-        .toJson(QJsonDocument::Indented);
+    QJsonObject root{{"needful", FormatVersion},
+                     {"contexts", contextArray},
+                     {"routines", routineArray},
+                     {"tasks", taskArray},
+                     {"completions", completionArray},
+                     {"log", logArray}};
+    if (!reserved.isEmpty()) {
+        QJsonObject highest;
+        for (auto it = reserved.begin(); it != reserved.end(); ++it)
+            highest[it.key()] = it.value();
+        root["reserved"] = highest;
+    }
+    return QJsonDocument(root).toJson(QJsonDocument::Indented);
 }
 
 bool Store::fromJson(const QByteArray &json, QString *error) {
@@ -198,8 +204,21 @@ bool Store::fromJson(const QByteArray &json, QString *error) {
                            QDateTime::fromString(o.value("at").toString(), Qt::ISODate), o.value("text").toString(),
                            o.value("task").toInt()});
     }
+    const QJsonObject highest = root.value("reserved").toObject();
+    for (auto it = highest.begin(); it != highest.end(); ++it)
+        loaded.reserved[it.key()] = it.value().toInt();
     *this = loaded;
     return true;
+}
+
+int Store::nextId(const QString &list) const {
+    int highest = reserved.value(list);
+    if (list == "contexts") highest = std::max(highest, highestId(contexts));
+    else if (list == "routines") highest = std::max(highest, highestId(routines));
+    else if (list == "tasks") highest = std::max(highest, highestId(tasks));
+    else if (list == "completions") highest = std::max(highest, highestId(completions));
+    else if (list == "log") highest = std::max(highest, highestId(log));
+    return highest + 1;
 }
 
 Task *Store::task(int id) {
@@ -355,7 +374,7 @@ QDate Store::nextDue(const Task &task, const QDate &done) const {
 }
 
 int Store::addTask(Task task, const QDate &today) {
-    task.id = highestId(tasks) + 1;
+    task.id = nextId("tasks");
     if (!task.created.isValid())
         task.created = today;
     if (!task.due.isValid())
@@ -365,7 +384,7 @@ int Store::addTask(Task task, const QDate &today) {
 }
 
 int Store::addContext(const QString &name, int parent) {
-    const int id = highestId(contexts) + 1;
+    const int id = nextId("contexts");
     contexts.append({id, name.trimmed(), context(parent) ? parent : 0});
     return id;
 }
@@ -409,7 +428,7 @@ int Store::makeRoutine(int taskId) {
     if (t->routine)
         return t->routine;
     // The task's notes become the shared notes; it starts with none of its own.
-    Routine r{highestId(routines) + 1, t->title, t->notes, t->priority, t->schedule, t->months};
+    Routine r{nextId("routines"), t->title, t->notes, t->priority, t->schedule, t->months};
     routines.append(r);
     t->routine = r.id;
     t->notes.clear();
@@ -453,7 +472,7 @@ bool Store::complete(int id, const QDateTime &at, const QString &note, const QDa
     Task *t = task(id);
     if (!t)
         return false;
-    completions.append({highestId(completions) + 1, t->id, t->title, t->context, at, note.trimmed()});
+    completions.append({nextId("completions"), t->id, t->title, t->context, at, note.trimmed()});
     t->snoozedUntil = {};
     t->today = {};
     switch (t->schedule.kind) {
@@ -479,7 +498,7 @@ int Store::addLog(int contextId, const QDateTime &at, const QString &text) {
     const QString trimmed = text.trimmed();
     if (trimmed.isEmpty())
         return 0;
-    const int id = highestId(log) + 1;
+    const int id = nextId("log");
     log.append({id, context(contextId) ? contextId : 0, at, trimmed, 0});
     return id;
 }

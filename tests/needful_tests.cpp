@@ -12,6 +12,7 @@
 #include "httpserver.h"
 #include "serve.h"
 #include "store.h"
+#include "sync.h"
 #include "theme.h"
 #include "translator.h"
 #include "webapi.h"
@@ -32,6 +33,46 @@ void write(const QString &path, const QByteArray &contents) {
     QFile file(path);
     QVERIFY(file.open(QIODevice::WriteOnly));
     file.write(contents);
+}
+
+QByteArray contentsOf(const QString &path) {
+    QFile file(path);
+    return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+}
+
+// A sync tool between two folders that runs only when told to: each
+// machine's file goes wherever an older copy of it is.
+void copyNewer(const QString &from, const QString &to) {
+    const QDir source(from + "/machines");
+    QDir().mkpath(to + "/machines");
+    for (const QString &file : source.entryList({"*.json"}, QDir::Files)) {
+        const QString target = to + "/machines/" + file;
+        const QString clock = QJsonDocument::fromJson(contentsOf(source.filePath(file))).object().value("clock").toString();
+        const QString there = QJsonDocument::fromJson(contentsOf(target)).object().value("clock").toString();
+        if (QFile::exists(target) && there >= clock)
+            continue;
+        QFile::remove(target);
+        QFile::copy(source.filePath(file), target);
+    }
+}
+void syncTool(const QString &a, const QString &b) {
+    copyNewer(a, b);
+    copyNewer(b, a);
+}
+
+QStringList titles(const Store &store) {
+    QStringList found;
+    for (const auto &t : store.tasks)
+        found.append(t.title);
+    found.sort();
+    return found;
+}
+
+int taskNamed(const Store &store, const QString &title) {
+    for (const auto &t : store.tasks)
+        if (t.title == title)
+            return t.id;
+    return 0;
 }
 }
 
@@ -384,6 +425,282 @@ private slots:
         QCOMPARE(titles, (QStringList{"From the phone", "From the window", "From the window again"}));
         // Ids stay unique across the two writers.
         QCOMPARE(disk.tasks[0].id + disk.tasks[1].id + disk.tasks[2].id, 6);
+    }
+
+    // The first machine moves its data into the folder; the second joins,
+    // merging in only what it alone had, so a copy of the same file isn't
+    // doubled.
+    void syncSetupMovesInAndJoins()
+    {
+        QTemporaryDir dir;
+        const QString desktopData = dir.filePath("desktop/needful.json"), laptopData = dir.filePath("laptop/needful.json");
+        const QString desktopFolder = dir.filePath("desktop-sync"), laptopFolder = dir.filePath("laptop-sync");
+        const QDateTime noon(saturday, QTime(12, 0));
+        int mow = 0;
+        {
+            Backend desktop(desktopData);
+            desktop.setToday(saturday);
+            const int home = desktop.addContext("Home", 0);
+            mow = desktop.saveTask({{"title", "Mow"}, {"contexts", QVariantList{home}}, {"scheduleKind", "every"}});
+            desktop.complete(mow, "Edged too");
+            desktop.addLog({{"context", home}, {"text", "Gutter drips"}});
+        }
+        // The laptop had a copy of the same file, then a task of its own.
+        QDir().mkpath(dir.filePath("laptop"));
+        QFile::copy(desktopData, laptopData);
+        {
+            Backend laptop(laptopData);
+            laptop.setToday(saturday);
+            laptop.saveTask({{"title", "Wash the car"}});
+        }
+
+        SyncFolder::Setup first;
+        QString error;
+        QVERIFY2(SyncFolder::setup(desktopData, desktopFolder, "desktop", noon, &first, &error), qPrintable(error));
+        QVERIFY(!first.joined);
+        QCOMPARE(first.tasks, 1);
+        QCOMPARE(first.contexts, 1);
+        QCOMPARE(first.history, 2);
+        QVERIFY(SyncFolder::readPointer(contentsOf(desktopData), nullptr));
+        QVERIFY(QFile::exists(desktopData + ".before-sync"));
+        {
+            Backend desktop(desktopData);
+            QVERIFY(desktop.error().isEmpty());
+            QVERIFY(desktop.sync());
+            QCOMPARE(desktop.store().task(mow)->title, QString("Mow")); // Same numbers as before.
+            QCOMPARE(desktop.store().history(mow).first().note, QString("Edged too"));
+        }
+
+        syncTool(desktopFolder, laptopFolder);
+        SyncFolder::Setup joined;
+        QVERIFY2(SyncFolder::setup(laptopData, laptopFolder, "laptop", noon, &joined, &error), qPrintable(error));
+        QVERIFY(joined.joined);
+        QCOMPARE(joined.others, QStringList{"desktop"});
+        QCOMPARE(joined.tasks, 1);
+        QCOMPARE(joined.history, 0);
+        QCOMPARE(joined.name, QString("laptop"));
+
+        // Setting up again is harmless; another folder is refused.
+        SyncFolder::Setup again;
+        QVERIFY(SyncFolder::setup(laptopData, laptopFolder, {}, noon, &again, &error));
+        QVERIFY(again.already);
+        QVERIFY(!SyncFolder::setup(laptopData, dir.filePath("elsewhere"), {}, noon, &again, &error));
+
+        syncTool(desktopFolder, laptopFolder);
+        Backend desktop(desktopData), laptop(laptopData);
+        QCOMPARE(titles(desktop.store()), (QStringList{"Mow", "Wash the car"}));
+        QCOMPARE(desktop.store().toJson(), laptop.store().toJson());
+        QCOMPARE(desktop.store().log.size(), 1);
+    }
+
+    // Each row of the pitch's table, made on two machines that can't see
+    // each other, then synced: both end up with the same list.
+    void syncMergesChangesFromBothMachines()
+    {
+        QTemporaryDir dir;
+        const QString aData = dir.filePath("a.json"), bData = dir.filePath("b.json");
+        const QString aFolder = dir.filePath("a-sync"), bFolder = dir.filePath("b-sync");
+        const QDate sunday = saturday.addDays(1), monday = saturday.addDays(2);
+        int home = 0;
+        {
+            Backend a(aData);
+            a.setToday(saturday);
+            home = a.addContext("Home", 0);
+            for (const QString title : {"Mow", "Gutters", "Filter", "Rake", "Sweep", "Dust"})
+                a.saveTask({{"title", title}, {"contexts", QVariantList{home}}, {"scheduleKind", "every"}, {"unit", "week"},
+                            {"due", saturday.toString(Qt::ISODate)}});
+            a.complete(taskNamed(a.store(), "Rake"), "Last fall");
+        }
+        SyncFolder::Setup setup;
+        QString error;
+        QVERIFY(SyncFolder::setup(aData, aFolder, "desktop", QDateTime(saturday, QTime(12, 0)), &setup, &error));
+        syncTool(aFolder, bFolder);
+        QVERIFY(SyncFolder::setup(bData, bFolder, "laptop", QDateTime(saturday, QTime(12, 0)), &setup, &error));
+
+        Backend a(aData), b(bData);
+        a.setToday(saturday);
+        b.setToday(saturday);
+        const Store &sa = a.store();
+        const int mow = taskNamed(sa, "Mow"), gutters = taskNamed(sa, "Gutters"), filter = taskNamed(sa, "Filter"),
+                  rake = taskNamed(sa, "Rake"), sweep = taskNamed(sa, "Sweep"), dust = taskNamed(sa, "Dust");
+        QCOMPARE(taskNamed(b.store(), "Mow"), mow);
+
+        auto edit = [](Backend &machine, int id, const QVariantMap &changes) {
+            QVariantMap fields = machine.task(id);
+            fields["scope"] = "only";
+            for (auto it = changes.begin(); it != changes.end(); ++it)
+                fields[it.key()] = it.value();
+            machine.saveTask(fields);
+        };
+        // Different things: both kept.
+        edit(a, mow, {{"priority", 4}});
+        edit(b, mow, {{"notes", "Bag the clippings"}});
+        // Done the same day: one completion, both notes.
+        a.complete(gutters, "Left side");
+        b.complete(gutters, "Right side");
+        // Deleted on one, edited on the other: it stays deleted, history too.
+        a.removeTask(rake);
+        edit(b, rake, {{"notes", "Use the big rake"}});
+        // Notes on a context, and pulling into today.
+        a.addLog({{"context", home}, {"text", "Fence post loose"}});
+        b.addLog({{"context", home}, {"text", "Hose leaks"}});
+        a.toggleToday(sweep);
+        b.toggleToday(dust);
+        // New tasks on both: two tasks, though both picked the same number.
+        const int fromA = a.saveTask({{"title", "From the desktop"}});
+        const int fromB = b.saveTask({{"title", "From the laptop"}});
+        QCOMPARE(fromA, fromB);
+        // The same field: the later edit wins, though it arrives first.
+        b.setToday(sunday);
+        edit(b, sweep, {{"title", "Sweep the porch"}});
+        a.setToday(saturday);
+        edit(a, sweep, {{"title", "Sweep the deck"}});
+        // Done on different days: both in history, due follows the later.
+        a.complete(filter, "Saturday");
+        b.setToday(monday);
+        b.complete(filter, "Monday");
+
+        syncTool(aFolder, bFolder);
+        a.setToday(saturday);
+        b.setToday(saturday);
+        QTRY_COMPARE(a.store().toJson(), b.store().toJson());
+        Backend fresh(aData);
+        fresh.setToday(saturday);
+        QCOMPARE(fresh.store().toJson(), b.store().toJson());
+        const Store &s = fresh.store();
+
+        QCOMPARE(s.task(mow)->priority, 4);
+        QCOMPARE(s.task(mow)->notes, QString("Bag the clippings"));
+        QCOMPARE(s.history(gutters).size(), 1);
+        QStringList both = s.history(gutters).first().note.split('\n'); // In the order they were done.
+        both.sort();
+        QCOMPARE(both, (QStringList{"Left side", "Right side"}));
+        QVERIFY(!s.task(rake));
+        QCOMPARE(s.history(rake).size(), 1);
+        int notes = 0;
+        for (const auto &e : s.log)
+            notes += e.text == "Fence post loose" || e.text == "Hose leaks";
+        QCOMPARE(notes, 2);
+        QCOMPARE(s.task(sweep)->today, saturday);
+        QCOMPARE(s.task(dust)->today, saturday);
+        fresh.setView("today");
+        QCOMPARE(fresh.items().size(), 2);
+        QVERIFY(titles(s).contains("From the desktop") && titles(s).contains("From the laptop"));
+        QVERIFY(taskNamed(s, "From the desktop") != taskNamed(s, "From the laptop"));
+        QCOMPARE(s.task(sweep)->title, QString("Sweep the porch"));
+        QCOMPARE(s.history(filter).size(), 2);
+        QCOMPARE(s.task(filter)->due, monday.addDays(7));
+
+        // Deleting the merged completion deletes it everywhere, both halves.
+        const int merged = s.history(gutters).first().id;
+        a.removeCompletion(merged);
+        syncTool(aFolder, bFolder);
+        QTRY_COMPARE(b.store().history(gutters).size(), 0);
+    }
+
+    // A clock that jumps back can't put this machine's own changes out of
+    // order, and a change made after seeing another machine's beats it.
+    void syncOrdersChangesDespiteClocks()
+    {
+        QTemporaryDir dir;
+        const QString aData = dir.filePath("a.json"), bData = dir.filePath("b.json");
+        const QString aFolder = dir.filePath("a-sync"), bFolder = dir.filePath("b-sync");
+        int id = 0;
+        {
+            Backend a(aData);
+            a.setToday(saturday);
+            id = a.saveTask({{"title", "Mow"}});
+        }
+        SyncFolder::Setup setup;
+        QString error;
+        QVERIFY(SyncFolder::setup(aData, aFolder, "desktop", QDateTime(saturday, QTime(12, 0)), &setup, &error));
+        Backend a(aData);
+        a.setToday(saturday);
+        a.saveTask({{"id", id}, {"title", "First"}});
+        a.setToday(saturday.addDays(-30));
+        a.saveTask({{"id", id}, {"title", "Second"}});
+        QCOMPARE(Backend(aData).store().task(id)->title, QString("Second"));
+
+        syncTool(aFolder, bFolder);
+        QVERIFY(SyncFolder::setup(bData, bFolder, "laptop", QDateTime(saturday, QTime(12, 0)), &setup, &error));
+        Backend b(bData);
+        b.setToday(saturday.addDays(-400)); // A laptop whose clock is far behind.
+        b.saveTask({{"id", id}, {"title", "Third"}});
+        syncTool(aFolder, bFolder);
+        QTRY_COMPARE(a.store().task(id)->title, QString("Third"));
+    }
+
+    // Undo takes back this machine's own last change, deletes included, and
+    // the window picks up the other machine's changes as they arrive.
+    void syncUndoesAndUpdatesInPlace()
+    {
+        QTemporaryDir dir;
+        const QString aData = dir.filePath("a.json"), bData = dir.filePath("b.json");
+        const QString aFolder = dir.filePath("a-sync"), bFolder = dir.filePath("b-sync");
+        SyncFolder::Setup setup;
+        QString error;
+        QVERIFY(SyncFolder::setup(aData, aFolder, "desktop", QDateTime(saturday, QTime(12, 0)), &setup, &error));
+        Backend a(aData);
+        a.setToday(saturday);
+        const int mow = a.saveTask({{"title", "Mow"}});
+        a.complete(mow, "Edged");
+        a.removeTask(mow);
+        QVERIFY(!a.store().task(mow));
+        a.undo();
+        QVERIFY(a.store().task(mow));
+        QVERIFY(Backend(aData).store().task(mow));
+        a.undo();
+        QCOMPARE(Backend(aData).store().history(mow).size(), 0);
+        a.redo();
+        QCOMPARE(Backend(aData).store().history(mow).size(), 1);
+
+        syncTool(aFolder, bFolder);
+        QVERIFY(SyncFolder::setup(bData, bFolder, "laptop", QDateTime(saturday, QTime(12, 0)), &setup, &error));
+        Backend b(bData);
+        b.setToday(saturday);
+        b.saveTask({{"title", "From the laptop"}});
+        syncTool(aFolder, bFolder);
+        QTRY_COMPARE(a.store().tasks.size(), 2);
+        QVERIFY(!a.canUndo()); // Its steps were for a list that has since changed.
+        QCOMPARE(a.syncText(), QString::fromUtf8("⇄ Synced · laptop just now"));
+    }
+
+    void syncStatusRenamesAndForgets()
+    {
+        QTemporaryDir dir;
+        const QString aData = dir.filePath("a.json"), bData = dir.filePath("b.json"), folder = dir.filePath("sync");
+        SyncFolder::Setup setup;
+        QString error;
+        QVERIFY(SyncFolder::setup(aData, folder, "desktop", QDateTime(saturday.addDays(-10), QTime(12, 0)), &setup, &error));
+        // Same name: the second gets its own.
+        QVERIFY(SyncFolder::setup(bData, folder, "desktop", QDateTime(saturday, QTime(12, 0)), &setup, &error));
+        QCOMPARE(setup.name, QString("desktop-2"));
+        // A file a sync tool set aside is not Needful's, and is left alone.
+        write(folder + "/machines/abc.sync-conflict-20261119-1.json", "not json");
+
+        Backend b(bData);
+        b.setToday(saturday);
+        QVERIFY(b.error().isEmpty());
+        QVERIFY(b.sync()->rename("laptop", &error));
+        QVERIFY(!b.sync()->rename("Desktop", &error));
+        QCOMPARE(b.sync()->machines().size(), 2);
+        QCOMPARE(b.syncText(), QString("desktop: nothing since %1").arg(QLocale().toString(saturday.addDays(-10), QLocale::ShortFormat)));
+        QVERIFY(b.syncLate());
+
+        QString desktop;
+        for (const auto &m : b.sync()->machines())
+            if (m.name == "desktop")
+                desktop = m.id;
+        QVERIFY(b.sync()->forget(desktop, &error));
+        Backend again(bData);
+        again.setToday(saturday);
+        QCOMPARE(again.syncText(), QString::fromUtf8("⇄ Synced · no other computer yet"));
+
+        // It comes back when it changes something again.
+        Backend a(aData);
+        a.setToday(saturday);
+        a.saveTask({{"title", "Back again"}});
+        QTRY_COMPARE(again.syncText(), QString::fromUtf8("⇄ Synced · desktop just now"));
     }
 
     void httpParsesSplitRequests()

@@ -5,6 +5,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QLocale>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -426,6 +427,138 @@ int skill(const QStringList &arguments) {
     return 0;
 }
 
+// ~/Sync/needful rather than /home/someone/Sync/needful.
+QString shortPath(const QString &path) {
+    const QString home = QDir::homePath();
+    return path == home || path.startsWith(home + "/") ? "~" + path.mid(home.size()) : path;
+}
+
+QString count(int n) { return QLocale().toString(n); }
+
+int sync(const QStringList &arguments) {
+    Command command("sync", "Keep the same Needful on your computers, through a folder a sync tool keeps in step.");
+    command.parser.addPositionalArgument("action", "setup <folder>, status, rename <name>, or forget <machine>",
+                                         "<action>");
+    command.parser.addOption({"name", "With setup: what to call this machine (its host name by default)", "name"});
+    command.json();
+    command.parser.process(arguments);
+    const QString action = command.argument(1), argument = command.parser.positionalArguments().mid(2).join(' ');
+    const QString dataPath = command.dataPath().isEmpty() ? Backend::defaultDataPath() : command.dataPath();
+
+    if (action == "setup") {
+        if (argument.trimmed().isEmpty())
+            return fail("Name the folder your sync tool shares: needful sync setup ~/Sync/needful");
+        SyncFolder::Setup result;
+        QString error;
+        if (!SyncFolder::setup(dataPath, argument, command.parser.value("name"), QDateTime::currentDateTime(), &result,
+                               &error))
+            return fail(error);
+        const QString folder = shortPath(QDir::cleanPath(QFileInfo(argument).absoluteFilePath()));
+        if (command.wantsJson()) {
+            printJson(QJsonObject{{"folder", QDir::cleanPath(QFileInfo(argument).absoluteFilePath())},
+                                  {"this", result.name},
+                                  {"joined", result.joined},
+                                  {"already", result.already},
+                                  {"others", QJsonArray::fromStringList(result.others)},
+                                  {"tasks", result.tasks},
+                                  {"contexts", result.contexts},
+                                  {"history", result.history}});
+        } else if (result.already) {
+            print(stdout, QString("Already syncing with %1. This machine is \"%2\".").arg(folder, result.name));
+        } else if (result.joined) {
+            QStringList quoted;
+            for (const QString &name : result.others)
+                quoted.append("\"" + name + "\"");
+            const QString merged = result.tasks ? QString(" Merged %1 %2 that %3 only here.")
+                                                      .arg(count(result.tasks), result.tasks == 1 ? "task" : "tasks",
+                                                           result.tasks == 1 ? "was" : "were")
+                                                : QString(" Nothing was only here.");
+            print(stdout, QString("Joined %1 (from %2).%3").arg(folder, quoted.join(", "), merged));
+            print(stdout, QString("This machine is \"%1\".").arg(result.name));
+        } else {
+            print(stdout, QString("Moved %1 %2, %3 %4, and %5 history %6 into %7.")
+                              .arg(count(result.tasks), result.tasks == 1 ? "task" : "tasks", count(result.contexts),
+                                   result.contexts == 1 ? "context" : "contexts", count(result.history),
+                                   result.history == 1 ? "entry" : "entries", folder));
+            print(stdout, QString("This machine is \"%1\". Run the same command on your other computers.").arg(result.name));
+        }
+        return 0;
+    }
+
+    Backend backend(dataPath);
+    if (!backend.error().isEmpty())
+        return fail(backend.error());
+    SyncFolder *folder = backend.sync();
+    if (!folder) {
+        if (action == "status" && command.wantsJson()) {
+            printJson(QJsonObject{{"folder", QJsonValue::Null}});
+            return 0;
+        }
+        if (action == "status") {
+            print(stdout, "This machine doesn't sync. Set it up with: needful sync setup <folder>");
+            return 0;
+        }
+        return fail("This machine doesn't sync yet. Set it up with: needful sync setup <folder>");
+    }
+    QList<SyncFolder::Machine> machines;
+    for (const auto &m : folder->machines())
+        if (!m.forgotten)
+            machines.append(m);
+
+    if (action == "status" || action.isEmpty()) {
+        if (command.wantsJson()) {
+            QJsonArray array;
+            for (const auto &m : machines)
+                array.append(QJsonObject{{"id", m.id},
+                                         {"name", m.name},
+                                         {"this", m.id == folder->machine()},
+                                         {"lastChange", m.changed.isValid() ? QJsonValue(m.changed.toString(Qt::ISODateWithMs))
+                                                                            : QJsonValue::Null}});
+            printJson(QJsonObject{{"folder", folder->folder()}, {"this", folder->name()}, {"machines", array}});
+            return 0;
+        }
+        int width = 6;
+        for (const auto &m : machines)
+            width = std::max(width, int(m.name.size()));
+        print(stdout, QString("Folder").leftJustified(width + 2) + shortPath(folder->folder()));
+        print(stdout, QString("This").leftJustified(width + 2) + folder->name());
+        for (const auto &m : machines)
+            print(stdout, m.name.leftJustified(width + 2) +
+                              (m.changed.isValid() ? "last change " + backend.heardText(m.changed) : QString("no changes yet")));
+        return 0;
+    }
+
+    if (action == "rename") {
+        QString error;
+        if (!folder->rename(argument, &error))
+            return fail(error);
+        print(stdout, QString("This machine is now \"%1\".").arg(folder->name()));
+        return 0;
+    }
+
+    if (action == "forget") {
+        if (argument.trimmed().isEmpty())
+            return fail("Name the machine to forget: needful sync forget old-laptop");
+        const SyncFolder::Machine *found = nullptr;
+        for (const auto &m : machines)
+            if (m.name.compare(argument.trimmed(), Qt::CaseInsensitive) == 0 || m.id == argument.trimmed())
+                found = &m;
+        if (!found)
+            return fail(QString("No machine named %1. See: needful sync status").arg(argument.trimmed()));
+        if (found->id == folder->machine())
+            return fail(QString("\"%1\" is this machine. Run it from another computer.").arg(found->name));
+        QString error;
+        if (!folder->forget(found->id, &error))
+            return fail(error);
+        print(stdout, QString("Forgot \"%1\" (last change %2). Its %3 %4 stay.")
+                          .arg(found->name,
+                               found->changed.isValid() ? found->changed.toLocalTime().date().toString(Qt::ISODate) : "never",
+                               count(found->records), found->records == 1 ? "change" : "changes"));
+        return 0;
+    }
+    return fail("Use needful sync setup <folder>, sync status, sync rename <name>, or sync forget <machine>.");
+}
+
 int help(const QStringList &arguments) {
     const QString topic = arguments.value(2);
     if (isCliCommand(topic) && topic != "help")
@@ -448,6 +581,11 @@ QString cliSummary() {
            "  history [--context C]            What was done and noted, newest first\n"
            "  contexts [add <path>]            List or add contexts\n"
            "  skill [install]                  Print the skill for coding agents, or install it\n\n"
+           "Your other computers (needful help sync):\n"
+           "  sync setup <folder>              Keep this machine in step through a synced folder\n"
+           "  sync status                      When each machine's changes were last seen\n"
+           "  sync rename <name>               Change how this machine is shown\n"
+           "  sync forget <machine>            Stop showing a machine you no longer use\n\n"
            "Phone page (needful help serve):\n"
            "  serve [--port 8787]              Serve the page and its API until stopped\n"
            "  serve install [--tailscale]      Keep it running as a systemd user service\n"
@@ -458,7 +596,7 @@ QString cliSummary() {
 }
 
 bool isCliCommand(const QString &word) {
-    return QStringList{"list", "add", "done", "snooze", "today", "log", "history", "contexts", "skill", "serve",
+    return QStringList{"list", "add", "done", "snooze", "today", "log", "history", "contexts", "skill", "serve", "sync",
                        "help", "--help", "-h", "--version", "-v"}
         .contains(word);
 }
@@ -479,5 +617,6 @@ int runCli(const QStringList &arguments) {
            : command == "contexts" ? contexts(arguments)
            : command == "skill"    ? skill(arguments)
            : command == "serve"    ? runServe(arguments)
+           : command == "sync"     ? sync(arguments)
                                    : help(arguments);
 }

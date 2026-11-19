@@ -6,8 +6,8 @@ DEFINES += APP_VERSION=\\\"test\\\"
 
 INCLUDEPATH += ../src
 
-HEADERS += ../src/backend.h ../src/httpserver.h ../src/serve.h ../src/store.h ../src/theme.h \
+HEADERS += ../src/backend.h ../src/httpserver.h ../src/serve.h ../src/store.h ../src/sync.h ../src/theme.h \
            ../src/translator.h ../src/webapi.h
-SOURCES += needful_tests.cpp ../src/backend.cpp ../src/httpserver.cpp ../src/serve.cpp ../src/store.cpp \
+SOURCES += needful_tests.cpp ../src/backend.cpp ../src/httpserver.cpp ../src/serve.cpp ../src/store.cpp ../src/sync.cpp \
            ../src/theme.cpp ../src/translator.cpp ../src/webapi.cpp
 RESOURCES += ../src/web/web.qrc

@@ -4,8 +4,10 @@
 #include <QObject>
 #include <QTimer>
 #include <QVariant>
+#include <memory>
 
 #include "store.h"
+#include "sync.h"
 
 // The window's view of the store: which list is showing, filtered to which
 // context, and every change the person makes, each one saved at once and
@@ -25,6 +27,10 @@ class Backend : public QObject {
     Q_PROPERTY(QString dataPath READ dataPath CONSTANT)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY changed)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY changed)
+    // For a synced machine, when the others were last heard from; empty when
+    // this machine doesn't sync. syncLate says one hasn't been for a while.
+    Q_PROPERTY(QString syncText READ syncText NOTIFY syncChanged)
+    Q_PROPERTY(bool syncLate READ syncLate NOTIFY syncChanged)
 
 public:
     // An empty path means the platform's app data folder: ~/.local/share on
@@ -49,6 +55,12 @@ public:
     QString dataPath() const { return m_path; }
     bool canUndo() const { return !m_undo.isEmpty(); }
     bool canRedo() const { return !m_redo.isEmpty(); }
+    QString syncText() const { return m_syncText; }
+    bool syncLate() const { return m_syncLate; }
+    // The folder this machine syncs through, or null for one file.
+    SyncFolder *sync() const { return m_sync.get(); }
+    // "just now", "4 minutes ago", "yesterday"; brief says "4 min ago".
+    QString heardText(const QDateTime &at, bool brief = false) const;
 
     // Tests pin the date; the app follows the calendar.
     void setToday(const QDate &day);
@@ -88,10 +100,13 @@ signals:
     void viewChanged();
     void changed();
     void errorChanged();
+    void syncChanged();
 
 private:
     template <typename Change> bool change(Change apply);
     void restore(const QByteArray &json);
+    bool persist(QString *message);
+    void updateSync();
     void reloadFromDisk();
     enum CatchUp { Current, CaughtUp, Unreadable };
     CatchUp catchUp();
@@ -116,6 +131,9 @@ private:
     QVariantList m_items, m_doneToday, m_contexts;
     QVariantMap m_counts;
     QString m_error;
+    std::unique_ptr<SyncFolder> m_sync;
+    QString m_syncText;
+    bool m_syncLate = false;
     QList<QByteArray> m_undo, m_redo;
     QByteArray m_written;
     QDate m_fixedToday, m_shownDay;

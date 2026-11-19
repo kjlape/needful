@@ -35,11 +35,7 @@ QString stateName(Store::State state) {
 
 Backend::Backend(const QString &dataPath, QObject *parent)
     : QObject(parent), m_path(dataPath.isEmpty() ? defaultDataPath() : dataPath) {
-    QString message;
-    if (!m_store.load(m_path, &message))
-        setError(message);
-    if (QFile file(m_path); file.open(QIODevice::ReadOnly))
-        m_written = file.readAll();
+    catchUp();
 
     // The command line, or another machine syncing the folder, can change the
     // file while the window is open; pick that up rather than overwrite it.
@@ -55,6 +51,8 @@ Backend::Backend(const QString &dataPath, QObject *parent)
     connect(&m_clock, &QTimer::timeout, this, [this] {
         if (today() != m_shownDay)
             refresh();
+        else
+            updateSync(); // "4 min ago" becomes "5 min ago".
     });
     m_clock.start();
     refresh();
@@ -76,28 +74,52 @@ void Backend::watch() {
         m_watcher.addPath(info.absolutePath());
     if (info.exists())
         m_watcher.addPath(m_path);
+    // A synced machine hears of the others' changes when the sync tool
+    // brings their files into the folder.
+    if (m_sync && !m_sync->watchPaths().isEmpty())
+        m_watcher.addPaths(m_sync->watchPaths());
 }
 
 void Backend::reloadFromDisk() {
+    const CatchUp caught = catchUp();
     watch();
-    if (catchUp() == CaughtUp)
+    if (caught == CaughtUp)
         refresh();
+    else
+        updateSync(); // A machine can be heard from, or renamed, without changing the list.
 }
 
 // Takes in what another process (the window, the command line, the phone
 // server) saved since this one last read or wrote the file.
+// For a synced machine, the data file points at the folder, and what's on
+// disk is every machine's changes, merged.
 Backend::CatchUp Backend::catchUp() {
     QFile file(m_path);
     if (!file.open(QIODevice::ReadOnly))
         return Current; // No file yet; nothing to take in.
-    const QByteArray contents = file.readAll();
-    if (contents == m_written)
-        return Current;
+    QByteArray contents = file.readAll();
     Store loaded;
     QString message;
-    if (!loaded.fromJson(contents, &message)) {
-        setError(message);
-        return Unreadable;
+    SyncFolder::Pointer pointer;
+    if (SyncFolder::readPointer(contents, &pointer)) {
+        // Set up from the command line while this was open, or moved.
+        if (!m_sync || m_sync->folder() != pointer.folder || m_sync->machine() != pointer.machine)
+            m_sync = std::make_unique<SyncFolder>(pointer.folder, pointer.machine);
+        if (!m_sync->read(&loaded, &message)) {
+            setError(message);
+            return Unreadable;
+        }
+        contents = loaded.toJson();
+        if (contents == m_written)
+            return Current;
+    } else {
+        m_sync.reset();
+        if (contents == m_written)
+            return Current;
+        if (!loaded.fromJson(contents, &message)) {
+            setError(message);
+            return Unreadable;
+        }
     }
     // Undo steps were taken against the old file, so they no longer apply.
     m_store = loaded;
@@ -131,7 +153,7 @@ template <typename Change> bool Backend::change(Change apply) {
     if (after == before)
         return false;
     QString message;
-    if (!m_store.save(m_path, &message)) {
+    if (!persist(&message)) {
         // Saving failed, so undo the change in memory too: the window must
         // never show something that isn't on disk.
         m_store.fromJson(before);
@@ -139,7 +161,6 @@ template <typename Change> bool Backend::change(Change apply) {
         refresh();
         return false;
     }
-    m_written = after;
     m_undo.append(before);
     if (m_undo.size() > UndoLimit)
         m_undo.removeFirst();
@@ -153,11 +174,20 @@ template <typename Change> bool Backend::change(Change apply) {
 void Backend::restore(const QByteArray &json) {
     QString message;
     m_store.fromJson(json);
-    if (!m_store.save(m_path, &message))
+    if (!persist(&message))
         setError(message);
-    m_written = m_store.toJson();
     watch();
     refresh();
+}
+
+// Saves the store: to the one file, or, for a synced machine, as this
+// machine's changes in the folder. A synced store comes back as every
+// machine builds it, which is almost always just what was saved.
+bool Backend::persist(QString *message) {
+    const bool saved = m_sync ? m_sync->write(&m_store, now(), message) : m_store.save(m_path, message);
+    if (saved)
+        m_written = m_store.toJson();
+    return saved;
 }
 
 void Backend::undo() {
@@ -315,6 +345,57 @@ void Backend::refresh() {
     walk(0, 0);
 
     emit changed();
+    updateSync();
+}
+
+QString Backend::heardText(const QDateTime &at, bool brief) const {
+    if (!at.isValid())
+        return tr("no changes yet");
+    const QDateTime current = m_fixedToday.isValid() ? QDateTime(m_fixedToday, QTime(12, 0)) : QDateTime::currentDateTime();
+    const qint64 minutes = std::max<qint64>(0, at.secsTo(current) / 60);
+    if (minutes < 1) return tr("just now");
+    if (minutes < 60) return brief ? tr("%n min ago", "", int(minutes)) : tr("%n minutes ago", "", int(minutes));
+    if (minutes < 24 * 60) return brief ? tr("%n hr ago", "", int(minutes / 60)) : tr("%n hours ago", "", int(minutes / 60));
+    return agoText(at.toLocalTime().date(), current.date());
+}
+
+// The sidebar footer: quiet while every machine is heard from, plain words
+// when one hasn't been in a while. It only knows when it last saw each
+// machine's changes, not whether a sync tool is running.
+void Backend::updateSync() {
+    QString text;
+    bool late = false;
+    if (m_sync) {
+        const QDateTime current = m_fixedToday.isValid() ? QDateTime(m_fixedToday, QTime(12, 0)) : QDateTime::currentDateTime();
+        QList<SyncFolder::Machine> others;
+        for (const auto &m : m_sync->machines())
+            if (m.id != m_sync->machine() && !m.forgotten)
+                others.append(m);
+        std::sort(others.begin(), others.end(),
+                  [](const auto &a, const auto &b) { return a.changed > b.changed; });
+        QStringList quiet;
+        for (const auto &m : others)
+            if (!m.changed.isValid() || m.changed.daysTo(current) >= 3) {
+                const QDate day = m.changed.toLocalTime().date();
+                const QString since = !m.changed.isValid()        ? tr("nothing yet")
+                                      : day.daysTo(current.date()) < 7 ? tr("nothing since %1").arg(QLocale().dayName(day.dayOfWeek()))
+                                                                   : tr("nothing since %1").arg(QLocale().toString(day, QLocale::ShortFormat));
+                quiet.append(m.name + ": " + since);
+            }
+        if (!quiet.isEmpty()) {
+            late = true;
+            text = quiet.join(QString::fromUtf8(" · "));
+        } else if (others.isEmpty()) {
+            text = QString::fromUtf8("⇄ ") + tr("Synced · no other computer yet");
+        } else {
+            text = QString::fromUtf8("⇄ ") + tr("Synced · %1 %2").arg(others.first().name, heardText(others.first().changed, true));
+        }
+    }
+    if (text == m_syncText && late == m_syncLate)
+        return;
+    m_syncText = text;
+    m_syncLate = late;
+    emit syncChanged();
 }
 
 QDate Backend::returnsOn(const Task &task, const QDate &today) const {

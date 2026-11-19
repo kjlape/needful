@@ -12,6 +12,7 @@ HEADERS += \
     src/httpserver.h \
     src/serve.h \
     src/store.h \
+    src/sync.h \
     src/theme.h \
     src/translator.h \
     src/webapi.h
@@ -23,6 +24,7 @@ SOURCES += \
     src/httpserver.cpp \
     src/serve.cpp \
     src/store.cpp \
+    src/sync.cpp \
     src/theme.cpp \
     src/translator.cpp \
     src/webapi.cpp

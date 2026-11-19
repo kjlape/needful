@@ -160,6 +160,19 @@ Rectangle {
             }
         }
 
+        // Quiet while every machine is heard from; plain words when one isn't.
+        Label {
+            visible: backend.syncText !== ""
+            Layout.fillWidth: true
+            Layout.leftMargin: 16
+            Layout.rightMargin: 12
+            Layout.bottomMargin: 2
+            wrapMode: Text.WordWrap
+            text: backend.syncText
+            color: backend.syncLate ? theme.accent : "#5a5a63"
+            font.pixelSize: 12
+        }
+
         Label {
             Layout.fillWidth: true
             Layout.leftMargin: 16

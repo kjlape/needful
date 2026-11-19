@@ -75,8 +75,32 @@ Everything lives in one JSON file in the platform's app data folder
 Flatpak, `~/Library/Application Support/needful` on macOS). `NEEDFUL_DATA` or
 `--data` points it elsewhere. Every change saves at once, atomically, with the
 previous version kept beside it as `needful.json.bak`. The window notices when
-the command line or a sync tool changes the file, and every change is applied
-on top of whatever another process saved, never over it.
+the command line changes the file, and every change is applied on top of
+whatever another process saved, never over it.
+
+## On your other computers
+
+Point Needful at a folder that a sync tool you already use (Syncthing,
+Dropbox, iCloud Drive, Nextcloud) keeps in step, once on each computer:
+
+```sh
+needful sync setup ~/Sync/needful    # the first moves its data in
+needful sync setup ~/Sync/needful    # the others join, merging in what only they had
+needful sync status                  # when each machine's changes were last seen
+needful sync rename laptop
+needful sync forget old-thinkpad     # stop listing a machine you retired; its changes stay
+```
+
+Every machine keeps working fully, online or not, and the open window takes
+in the other machines' changes as the sync tool brings them. Each machine
+writes only its own file in the folder, so the sync tool never has two
+versions of one file to choose between; every machine merges them all the
+same way. Different changes are all kept; the same field edited on two
+machines goes to the later edit, by when it was made; a task done on both
+the same day is one completion with both notes; a deleted task stays
+deleted. The data file then only says which folder to use, and the single
+file it held is kept beside it as `needful.json.before-sync`. Copy the
+folder to keep a backup.
 
 ## On your phone
 

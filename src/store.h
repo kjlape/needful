@@ -4,6 +4,7 @@
 #include <QDateTime>
 #include <QJsonObject>
 #include <QList>
+#include <QMap>
 #include <QString>
 #include <QStringList>
 
@@ -89,6 +90,10 @@ public:
     QList<Task> tasks;
     QList<Completion> completions;
     QList<LogEntry> log;
+    // The highest id ever used in each list ("tasks", "log", ...), counting
+    // records since deleted, so a new one never takes a deleted one's id.
+    // Only a synced store keeps them; on one file it stays empty.
+    QMap<QString, int> reserved;
 
     // Reading and writing. Saving writes beside the file and renames, so a
     // crash never leaves half a file, and keeps the previous one as .bak.
@@ -144,7 +149,7 @@ public:
     static QString followUpTitle(const QString &text);
 
     static QString unitName(const QString &unit);
-
-private:
-    int nextId() const;
+    // The id the next record in a list gets: "contexts", "routines", "tasks",
+    // "completions", or "log".
+    int nextId(const QString &list) const;
 };
