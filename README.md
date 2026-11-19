@@ -70,7 +70,33 @@ Everything lives in one JSON file in the platform's app data folder
 Flatpak, `~/Library/Application Support/needful` on macOS). `NEEDFUL_DATA` or
 `--data` points it elsewhere. Every change saves at once, atomically, with the
 previous version kept beside it as `needful.json.bak`. The window notices when
-the command line or a sync tool changes the file.
+the command line or a sync tool changes the file, and every change is applied
+on top of whatever another process saved, never over it.
+
+## On your phone
+
+`needful serve` runs a small web version for the phone: Today, Needful,
+Upcoming, and History by context, marking things done with a note, pulling
+into today, snoozing, logging a note, and quick tasks. It installs to the home
+screen as an app. It listens on 127.0.0.1:8787 only, and has no password, so
+Tailscale is how it reaches the phone.
+
+Keep it running as a systemd user service, with a Tailscale node of its own
+named `needful` (a userspace `tailscaled`, separate from the system's, so this
+machine's identity on the tailnet doesn't change):
+
+```sh
+needful serve install --tailscale
+systemctl --user daemon-reload
+systemctl --user enable --now needful-serve.service needful-tailscale.service
+needful serve login     # once: open the link it prints to add the node
+needful serve status    # http://127.0.0.1:8787/ and https://needful.<tailnet>.ts.net/
+```
+
+The tailnet needs MagicDNS and HTTPS certificates turned on (Tailscale admin
+console, DNS). Without `--tailscale`, only the first service is installed, and
+the page stays on this machine. `needful serve uninstall` stops and removes
+the services.
 
 ## Build
 

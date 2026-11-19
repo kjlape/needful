@@ -80,24 +80,31 @@ void Backend::watch() {
 
 void Backend::reloadFromDisk() {
     watch();
+    if (catchUp() == CaughtUp)
+        refresh();
+}
+
+// Takes in what another process (the window, the command line, the phone
+// server) saved since this one last read or wrote the file.
+Backend::CatchUp Backend::catchUp() {
     QFile file(m_path);
     if (!file.open(QIODevice::ReadOnly))
-        return;
+        return Current; // No file yet; nothing to take in.
     const QByteArray contents = file.readAll();
     if (contents == m_written)
-        return;
+        return Current;
     Store loaded;
     QString message;
     if (!loaded.fromJson(contents, &message)) {
         setError(message);
-        return;
+        return Unreadable;
     }
     // Undo steps were taken against the old file, so they no longer apply.
     m_store = loaded;
     m_written = contents;
     m_undo.clear();
     m_redo.clear();
-    refresh();
+    return CaughtUp;
 }
 
 void Backend::setError(const QString &message) {
@@ -112,6 +119,11 @@ void Backend::dismissError() { setError({}); }
 // Every change goes through here: remember the state before it for undo,
 // apply it, and save at once, so nothing is ever waiting to be saved.
 template <typename Change> bool Backend::change(Change apply) {
+    // Another process may have saved since the watcher last fired; apply the
+    // change on top of that instead of overwriting it. A file that can't be
+    // read is left alone, never replaced.
+    if (catchUp() == Unreadable)
+        return false;
     const QByteArray before = m_store.toJson();
     if (!apply())
         return false;
@@ -149,6 +161,8 @@ void Backend::restore(const QByteArray &json) {
 }
 
 void Backend::undo() {
+    if (catchUp() == CaughtUp)
+        refresh(); // The undo steps were for a file that has since changed.
     if (m_undo.isEmpty())
         return;
     m_redo.append(m_store.toJson());
@@ -156,6 +170,8 @@ void Backend::undo() {
 }
 
 void Backend::redo() {
+    if (catchUp() == CaughtUp)
+        refresh();
     if (m_redo.isEmpty())
         return;
     m_undo.append(m_store.toJson());

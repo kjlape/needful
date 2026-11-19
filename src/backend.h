@@ -87,6 +87,8 @@ private:
     template <typename Change> bool change(Change apply);
     void restore(const QByteArray &json);
     void reloadFromDisk();
+    enum CatchUp { Current, CaughtUp, Unreadable };
+    CatchUp catchUp();
     void watch();
     void setError(const QString &message);
     bool matches(const QString &text) const;

@@ -16,6 +16,7 @@ no display, takes `--json`, exits 0 or 1, and writes errors to stderr.
 - `needful snooze <id> <days>`, `needful today <id>` (pull into today, or put back)
 - `needful history [--context C] [--task id] [--search oil] --json` answers "when did I last…"
 - `needful contexts [add "Parent/Child"] --json`
+- `needful serve status --json` says whether the phone page is being served, and its tailnet URL. Leave `serve install`, `serve login`, and `serve uninstall` to the person: they change systemd and Tailscale.
 
 Ask before marking things done or deleting on the person's behalf. History is
 the person's record; never remove entries from it.

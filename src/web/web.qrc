@@ -1,0 +1,12 @@
+<RCC>
+    <qresource prefix="/web">
+        <file>index.html</file>
+        <file>app.js</file>
+        <file>style.css</file>
+        <file>sw.js</file>
+        <file>manifest.webmanifest</file>
+        <file>icon.svg</file>
+        <file>icon-192.png</file>
+        <file>icon-512.png</file>
+    </qresource>
+</RCC>

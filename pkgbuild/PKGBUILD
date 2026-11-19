@@ -5,6 +5,7 @@ pkgdesc='Routine tasks, most needful first'
 arch=('x86_64' 'aarch64')
 license=('MIT')
 depends=('qt6-base' 'qt6-declarative' 'qt6-wayland')
+optdepends=('tailscale: serve Needful on your tailnet')
 makedepends=('gcc' 'make')
 source=()
 sha256sums=()

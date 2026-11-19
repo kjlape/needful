@@ -1,4 +1,4 @@
-QT += core gui quick quickcontrols2 testlib
+QT += core gui quick quickcontrols2 network testlib
 CONFIG += c++17 testcase
 TARGET = needful_tests
 TEMPLATE = app
@@ -6,5 +6,8 @@ DEFINES += APP_VERSION=\\\"test\\\"
 
 INCLUDEPATH += ../src
 
-HEADERS += ../src/backend.h ../src/store.h ../src/theme.h ../src/translator.h
-SOURCES += needful_tests.cpp ../src/backend.cpp ../src/store.cpp ../src/theme.cpp ../src/translator.cpp
+HEADERS += ../src/backend.h ../src/httpserver.h ../src/serve.h ../src/store.h ../src/theme.h \
+           ../src/translator.h ../src/webapi.h
+SOURCES += needful_tests.cpp ../src/backend.cpp ../src/httpserver.cpp ../src/serve.cpp ../src/store.cpp \
+           ../src/theme.cpp ../src/translator.cpp ../src/webapi.cpp
+RESOURCES += ../src/web/web.qrc

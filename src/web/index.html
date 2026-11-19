@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0e0e10">
+  <meta name="color-scheme" content="dark">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Needful</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icon-192.png">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <div class="heading">
+      <h1 id="title">Needful</h1>
+      <p id="subtitle" class="dim"></p>
+    </div>
+    <div class="filters">
+      <label class="visually-hidden" for="context">Context</label>
+      <select id="context"></select>
+      <label class="visually-hidden" for="search">Search</label>
+      <input id="search" type="search" placeholder="Search" autocomplete="off" enterkeyhint="search">
+    </div>
+  </header>
+
+  <p id="problem" class="problem" hidden></p>
+  <main id="list" aria-live="polite"></main>
+
+  <button id="add" class="fab" type="button" aria-label="Add">+</button>
+
+  <nav class="tabs" aria-label="Lists">
+    <button type="button" data-view="today"><span class="tab-label"></span><span class="count"></span></button>
+    <button type="button" data-view="needful"><span class="tab-label"></span><span class="count"></span></button>
+    <button type="button" data-view="upcoming"><span class="tab-label"></span><span class="count"></span></button>
+    <button type="button" data-view="history"><span class="tab-label"></span><span class="count"></span></button>
+  </nav>
+
+  <dialog id="task-sheet" class="sheet"></dialog>
+  <dialog id="add-sheet" class="sheet"></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>
