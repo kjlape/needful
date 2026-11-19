@@ -5,6 +5,7 @@
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
+#include <QByteArray>
 #include <QUrl>
 #include <cstdio>
 
@@ -17,7 +18,10 @@
 int main(int argc, char *argv[]) {
     // Bare needful prints help, as a command line tool should; the launcher
     // says needful open. Commands draw no window, so they need no display.
-    const bool command = argc == 1 || isCliCommand(argv[1]);
+    // Launched from Finder (no arguments, inside an .app bundle) it opens the
+    // window, since a double-click has no way to say needful open.
+    const bool fromBundle = argc == 1 && QByteArray(argv[0]).contains(".app/Contents/MacOS/");
+    const bool command = !fromBundle && (argc == 1 || isCliCommand(argv[1]));
     if (command)
         qputenv("QT_QPA_PLATFORM", "offscreen");
 
@@ -32,7 +36,7 @@ int main(int argc, char *argv[]) {
     app.installTranslator(&translator);
     if (command)
         return runCli(app.arguments());
-    if (app.arguments().value(1) != "open") {
+    if (!fromBundle && app.arguments().value(1) != "open") {
         fprintf(stderr, "Unknown command %s\n\nUsage: needful <command> [options]\n\n%s\n", argv[1],
                 qPrintable(cliSummary()));
         return 1;
