@@ -128,7 +128,7 @@ needful sync reach desktop desktop.example.net      # look for it there too
 needful sync relay https://relay.example.net        # meet through an iroh-relay you run
 needful sync unpair old-mac                  # it can no longer connect; its changes stay
 needful sync rename laptop
-needful sync install                         # keep the link up as a user service
+needful sync install                         # keep the link up with the window closed
 ```
 
 ```
@@ -141,12 +141,13 @@ old-mac  not reachable since Tuesday · last change 2026-10-02
 
 Changes pass between paired computers whenever two of them are awake: while
 the window is open, while `needful serve` runs, or all the time with `sync
-install` (needful-link.service). Each passes along everything it has, so an
-always-on computer carries the laptop's changes to the desktop even if those
-two are never on at once. A relay is only used if you add one; it passes
-along traffic it can't read, and every paired computer learns of it. The
-link is encrypted end to end, and each computer only talks to computers it
-has paired with.
+install` (needful-link.service on Linux, a launchd agent on macOS). Each
+passes along everything it has, so run `sync install` on one always-on
+computer, like a desktop, and it carries the laptop's changes to your
+other computers even after every window is closed, and even if they're
+never on at once; `sync uninstall` stops it. A relay is only used if you add one; it passes along traffic it
+can't read, and every paired computer learns of it. The link is encrypted
+end to end, and each computer only talks to computers it has paired with.
 
 ### Through a sync folder
 

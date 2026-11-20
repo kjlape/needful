@@ -1736,6 +1736,19 @@ private slots:
                     .contains("Environment=\"NEEDFUL_DATA=/home/me/my data.json\"\n"));
     }
 
+    void linkLaunchAgentStaysUp()
+    {
+        const QByteArray agent = linkLaunchAgents("/Applications/Needful.app/Contents/MacOS/needful", {})[LinkAgent];
+        QVERIFY(agent.contains("<string>faithbibleinstitute.needful.link</string>"));
+        QVERIFY(agent.contains("<string>/Applications/Needful.app/Contents/MacOS/needful</string>\n"
+                               "        <string>sync</string>\n        <string>link</string>\n    </array>"));
+        QVERIFY(agent.contains("<key>KeepAlive</key>\n    <true/>"));
+        QVERIFY(!agent.contains("StartInterval"));
+        QVERIFY(agent.contains("Library/Logs/needful-link.log"));
+        QVERIFY(linkLaunchAgents("/usr/local/bin/needful", "/Users/me/my & data.json")[LinkAgent]
+                    .contains("<string>--data</string>\n        <string>/Users/me/my &amp; data.json</string>"));
+    }
+
     void themeFallsBack()
     {
         QTemporaryDir dir;

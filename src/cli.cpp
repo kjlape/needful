@@ -760,34 +760,52 @@ int syncLinkCommand(const QString &usual) {
 }
 
 int syncInstall(const QString &dataOverride, bool remove) {
-    QDir units(systemdUserDirectory());
-    const QString systemctl = QStandardPaths::findExecutable("systemctl");
+#ifdef Q_OS_MACOS
+    constexpr bool OnMac = true;
+#else
+    constexpr bool OnMac = false;
+#endif
+    QDir units(OnMac ? launchAgentsDirectory() : systemdUserDirectory());
+    const QString name = OnMac ? LinkAgent : LinkService;
+    const QString systemctl = OnMac ? QString() : QStandardPaths::findExecutable("systemctl");
     if (remove) {
-        if (!units.exists(LinkService))
-            return fail("Nothing to remove; no " + LinkService + " in " + units.path());
-        if (!systemctl.isEmpty())
-            QProcess::execute(systemctl, {"--user", "disable", "--now", LinkService});
-        units.remove(LinkService);
-        print(stdout, "Removed " + units.filePath(LinkService));
+        if (!units.exists(name))
+            return fail("Nothing to remove; no " + name + " in " + units.path());
+        if (OnMac)
+            unloadLaunchAgent(name);
+        else if (!systemctl.isEmpty())
+            QProcess::execute(systemctl, {"--user", "disable", "--now", name});
+        units.remove(name);
+        print(stdout, "Removed " + units.filePath(name));
         if (!systemctl.isEmpty())
             QProcess::execute(systemctl, {"--user", "daemon-reload"});
         return 0;
     }
-    if (systemctl.isEmpty())
+    if (!OnMac && systemctl.isEmpty())
         return fail("This needs systemd's user services to keep the link running.");
     if (!units.mkpath("."))
         return fail("Could not create " + units.path());
-    const auto files = linkUnits(QCoreApplication::applicationFilePath(), dataOverride);
+    const QString needful = QCoreApplication::applicationFilePath();
+    const auto files = OnMac ? linkLaunchAgents(needful, dataOverride) : linkUnits(needful, dataOverride);
     for (auto it = files.begin(); it != files.end(); ++it) {
         QSaveFile file(units.filePath(it.key()));
         if (!file.open(QIODevice::WriteOnly) || file.write(it.value()) < 0 || !file.commit())
             return fail("Could not write " + file.fileName());
         print(stdout, "Wrote " + file.fileName());
     }
-    QProcess::execute(systemctl, {"--user", "daemon-reload"});
-    if (QProcess::execute(systemctl, {"--user", "enable", "--now", LinkService}) != 0)
-        return fail("Could not start it: systemctl --user enable --now " + LinkService);
-    print(stdout, "The link to your paired computers stays up while this computer is on.\n"
+    if (OnMac) {
+        // A loaded agent starts now and at every login; there is no enable step.
+        QDir().mkpath(QDir::homePath() + "/Library/Logs");
+        if (QStandardPaths::findExecutable("launchctl").isEmpty())
+            return fail("Written, but launchctl isn't here to load it; it loads at your next login.");
+        if (!loadLaunchAgent(units.path(), name))
+            return fail("launchctl could not load " + name);
+    } else {
+        QProcess::execute(systemctl, {"--user", "daemon-reload"});
+        if (QProcess::execute(systemctl, {"--user", "enable", "--now", name}) != 0)
+            return fail("Could not start it: systemctl --user enable --now " + name);
+    }
+    print(stdout, "The link to your paired computers stays up while this computer is on, window or no window.\n"
                   "Stop with: needful sync uninstall");
     return 0;
 }
@@ -1220,7 +1238,7 @@ QString cliSummary() {
            "  sync pair                        Show a code for another computer to join with\n"
            "  sync join <code> [--at host]     Pair with the computer showing the code, joining its list\n"
            "  sync unpair <machine>            Stop trusting a paired computer; its changes stay\n"
-           "  sync install                     Keep the link up here as a user service\n"
+           "  sync install                     Keep syncing here with the window closed\n"
            "  sync setup <folder>              Keep this machine in step through a synced folder\n"
            "  sync status                      When each machine's changes were last seen\n"
            "  sync rename <name>               Change how this machine is shown\n"

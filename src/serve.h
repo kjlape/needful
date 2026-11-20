@@ -67,6 +67,9 @@ extern const QString RsyncService, RsyncTimer;
 // runs. data is empty for the usual data file.
 QMap<QString, QByteArray> linkUnits(const QString &needful, const QString &data);
 extern const QString LinkService;
+// The same as a launchd agent on macOS, kept alive and started at login.
+QMap<QString, QByteArray> linkLaunchAgents(const QString &needful, const QString &data);
+extern const QString LinkAgent;  // The agent's file name.
 
 int runServe(const QStringList &arguments);
 // SIGTERM and Ctrl+C end the event loop, so a long-running command shuts

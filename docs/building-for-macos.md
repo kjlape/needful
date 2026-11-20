@@ -83,7 +83,8 @@ existing data keeps working.
 
 Anything an Omarchy app installs as a systemd user unit (a server, a sync
 timer, a helper daemon) becomes a launchd agent on macOS. Needful's
-`serve install` and `sync rsync install` are the worked examples.
+`serve install`, `sync install` and `sync rsync install` are the worked
+examples.
 
 - **Where:** a plist at `~/Library/LaunchAgents/<label>.plist`. Name the label
   after the bundle id plus the job (`faithbibleinstitute.needful.serve`), and

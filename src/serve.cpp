@@ -707,6 +707,15 @@ QMap<QString, QByteArray> linkUnits(const QString &needful, const QString &data)
                           "WantedBy=default.target\n"}};
 }
 
+const QString LinkAgent = "faithbibleinstitute.needful.link.plist";
+
+QMap<QString, QByteArray> linkLaunchAgents(const QString &needful, const QString &data) {
+    QStringList link{needful, "sync", "link"};
+    if (!data.isEmpty())
+        link += {"--data", data};
+    return {{LinkAgent, agentPlist(LinkAgent.chopped(6), link, QDir::homePath() + "/Library/Logs/needful-link.log")}};
+}
+
 int runServe(const QStringList &arguments) {
     const QString command = arguments.value(2);
     if (command == "install") return install(arguments);
