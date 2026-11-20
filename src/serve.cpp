@@ -13,6 +13,7 @@
 #include <QStandardPaths>
 #include <QTcpSocket>
 #include <cstdio>
+#include <memory>
 
 #ifdef Q_OS_UNIX
 #include <csignal>
@@ -22,6 +23,7 @@
 
 #include "backend.h"
 #include "httpserver.h"
+#include "peers.h"
 #include "theme.h"
 #include "universes.h"
 #include "webapi.h"
@@ -221,6 +223,15 @@ int serve(const QStringList &arguments) {
     if (!host.isLoopback())
         print(stderr, "Anyone who can reach this address can read and change your list; there is no password.");
     fflush(stdout);
+    // Your paired computers stay in step while the page is served, unless
+    // the window or sync install already keeps the link here.
+    std::unique_ptr<PeerLink> link;
+    if (!parser.isSet("data")) {
+        link = std::make_unique<PeerLink>();
+        QString error;
+        if (!link->start(&error) && !error.isEmpty())
+            print(stderr, error);
+    }
     quitOnSignals();
     return QCoreApplication::exec();
 }
@@ -492,6 +503,24 @@ QMap<QString, QByteArray> rsyncUnits(const RsyncSetup &setup) {
     return units;
 }
 
+const QString LinkService = "needful-link.service";
+
+QMap<QString, QByteArray> linkUnits(const QString &needful, const QString &data) {
+    QByteArray environment;
+    if (!data.isEmpty())
+        environment = "Environment=" + unitArgument("NEEDFUL_DATA=" + data) + "\n";
+    return {{LinkService, "[Unit]\n"
+                          "Description=Needful: keep in step with your paired computers\n"
+                          "After=network-online.target\n"
+                          "Wants=network-online.target\n\n"
+                          "[Service]\n" + environment +
+                          "ExecStart=" + unitArgument(needful) + " sync link\n"
+                          "Restart=on-failure\n"
+                          "RestartSec=10\n\n"
+                          "[Install]\n"
+                          "WantedBy=default.target\n"}};
+}
+
 int runServe(const QStringList &arguments) {
     const QString command = arguments.value(2);
     if (command == "install") return install(arguments);
@@ -500,3 +529,5 @@ int runServe(const QStringList &arguments) {
     if (command == "status") return status(arguments);
     return serve(arguments);
 }
+
+void stopOnSignals() { quitOnSignals(); }

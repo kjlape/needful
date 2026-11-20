@@ -2,6 +2,13 @@
 #include "cli.h"
 
 #include <QCommandLineParser>
+#include <QCoreApplication>
+#include <QEventLoop>
+#include <QTimer>
+#include <QUrl>
+#include <functional>
+#include <memory>
+#include <optional>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -17,6 +24,8 @@
 #include <cstdlib>
 
 #include "backend.h"
+#include "devices.h"
+#include "peers.h"
 #include "serve.h"
 #include "universes.h"
 
@@ -523,10 +532,372 @@ int syncRsync(const Command &command, const SyncFolder &folder) {
     return 0;
 }
 
+// --- Peer sync: your computers, paired by code, with nothing in between.
+
+QString linkName(const QString &link) {
+    if (link == "local") return "connected on this network";
+    if (link == "direct") return "connected directly";
+    if (link == "relay") return "connected through the relay";
+    return {};
+}
+
+// "not reachable since Tuesday", for a machine not connected now.
+QString unreachableText(const QDateTime &seen, bool running) {
+    if (!running)
+        return "not connected (Needful isn't running here)";
+    if (!seen.isValid())
+        return "not reachable yet";
+    const QDate day = seen.toLocalTime().date(), today = QDate::currentDate();
+    if (day == today)
+        return "not reachable since " + QLocale().toString(seen.toLocalTime().time(), "H:mm");
+    if (day.daysTo(today) < 7)
+        return "not reachable since " + QLocale().dayName(day.dayOfWeek());
+    return "not reachable since " + day.toString(Qt::ISODate);
+}
+
+// Pairing and joining go through whichever Needful holds the link here, or,
+// when none does, this command holds it until it's done.
+struct Holder {
+    std::unique_ptr<PeerLink> link;
+    std::unique_ptr<LinkClient> client;
+    QString error;
+    bool open(const QString &usual) {
+        link = std::make_unique<PeerLink>(usual);
+        if (link->start(&error))
+            return true;
+        link.reset();
+        if (!error.isEmpty())
+            return false;
+        client = std::make_unique<LinkClient>(PeerLink::appDirFor(usual));
+        if (client->connectToOwner())
+            return true;
+        error = "Another Needful here holds the link but isn't answering. Close it and try again.";
+        return false;
+    }
+};
+
+// Prints what pairing says, and ends the loop on a failure, or when paired
+// unless onPaired says to wait longer.
+template <typename Source> void wire(Source *source, QEventLoop *loop, int *code, std::function<void()> onPaired = {}) {
+    QObject::connect(source, &Source::failed, loop, [loop, code](const QString &message) {
+        print(stderr, message);
+        *code = 1;
+        loop->quit();
+    });
+    QObject::connect(source, &Source::pairCode, loop, [](const QString &pairCode, const QString &name, const QString &fp) {
+        print(stdout, "Pair code: " + pairCode);
+        print(stdout, QString("This machine: \"%1\"  %2").arg(name, fp));
+        print(stdout, QString::fromUtf8("Waiting for a computer… (the code works once, for a few minutes)"));
+        print(stdout, "On the other computer: needful sync join " + pairCode);
+        fflush(stdout);
+    });
+    QObject::connect(source, &Source::paired, loop, [onPaired, loop](const QString &name, const QString &fp) {
+        print(stdout, QString("Paired with \"%1\"  %2").arg(name, fp));
+        fflush(stdout);
+        if (onPaired)
+            onPaired();
+        else
+            loop->quit();
+    });
+}
+
+int syncPair(const QString &usual) {
+    Holder holder;
+    if (!holder.open(usual))
+        return fail(holder.error);
+    QEventLoop loop;
+    int code = 0;
+    stopOnSignals();
+    if (holder.link) {
+        // Holding the link only for this, so stay until the new computer has
+        // what it needs from here and has sent back its own changes.
+        PeerLink *link = holder.link.get();
+        wire(link, &loop, &code, [&loop] { QTimer::singleShot(120 * 1000, &loop, &QEventLoop::quit); });
+        QObject::connect(link, &PeerLink::received, &loop, [&loop, link](const QString &list) {
+            if (list == link->listIdOf(Universes::Mine))
+                QTimer::singleShot(1500, &loop, &QEventLoop::quit);
+        });
+        link->pair();
+    } else {
+        wire(holder.client.get(), &loop, &code);
+        holder.client->pair();
+    }
+    QObject::connect(qApp, &QCoreApplication::aboutToQuit, &loop, &QEventLoop::quit);
+    loop.exec();
+    return code;
+}
+
+int syncJoin(const QString &usual, const QString &pairCode, const QString &at, bool yes) {
+    Holder holder;
+    if (!holder.open(usual))
+        return fail(holder.error);
+    QEventLoop loop;
+    int code = 0;
+    stopOnSignals();
+    auto ask = [yes](const QString &name, const QString &fp) {
+        if (yes)
+            return true;
+        fprintf(stdout, "Pair with \"%s\"  %s? [y/N] ", qPrintable(name), qPrintable(fp));
+        fflush(stdout);
+        char line[64] = {0};
+        if (!fgets(line, sizeof line, stdin))
+            return false;
+        const QString answer = QString::fromUtf8(line).trimmed().toLower();
+        return answer == "y" || answer == "yes";
+    };
+    auto onJoined = [](const QVariantMap &result) {
+        print(stdout, QString("Paired with \"%1\".").arg(result["name"].toString()));
+        if (result["already"].toBool()) {
+            print(stdout, "This computer already had its list.");
+        } else {
+            const int tasks = result["tasks"].toInt();
+            print(stdout, tasks ? QString("Joined its list. Merged %1 %2 that %3 only here.")
+                                      .arg(count(tasks), tasks == 1 ? "task" : "tasks", tasks == 1 ? "was" : "were")
+                                : QString("Joined its list. Nothing was only here."));
+        }
+        print(stdout, QString("This machine is \"%1\".").arg(result["this"].toString()));
+        fflush(stdout);
+    };
+    auto connectAll = [&](auto *source) {
+        using Source = std::remove_pointer_t<decltype(source)>;
+        wire(source, &loop, &code);
+        QObject::connect(source, &Source::confirm, &loop, [source, ask, &loop, &code](const QString &name, const QString &fp) {
+            const bool accept = ask(name, fp);
+            source->answer(accept);
+            if (!accept) {
+                print(stderr, "Not paired.");
+                code = 1;
+                QTimer::singleShot(300, &loop, &QEventLoop::quit);
+            }
+        });
+    };
+    if (holder.link) {
+        PeerLink *link = holder.link.get();
+        connectAll(link);
+        QObject::connect(link, &PeerLink::joined, &loop, [&loop, onJoined, link](const QVariantMap &result) {
+            onJoined(result);
+            // Stay until the other computer has this one's changes.
+            QTimer::singleShot(15 * 1000, &loop, &QEventLoop::quit);
+            QObject::connect(link, &PeerLink::sent, &loop, [&loop, link](const QString &list) {
+                if (list == link->listIdOf(Universes::Mine))
+                    QTimer::singleShot(1500, &loop, &QEventLoop::quit);
+            });
+        });
+        link->join(pairCode, at);
+    } else {
+        LinkClient *client = holder.client.get();
+        connectAll(client);
+        QObject::connect(client, &LinkClient::joined, &loop, [&loop, onJoined](const QVariantMap &result) {
+            onJoined(result);
+            loop.quit();
+        });
+        client->join(pairCode, at);
+    }
+    QObject::connect(qApp, &QCoreApplication::aboutToQuit, &loop, &QEventLoop::quit);
+    loop.exec();
+    return code;
+}
+
+int syncLinkCommand(const QString &usual) {
+    PeerLink link(usual);
+    QString error;
+    if (!link.start(&error))
+        return fail(error.isEmpty() ? QString("Another Needful here already keeps the link.") : error);
+    print(stdout, QString("Keeping \"%1\" in step with its paired computers until stopped.").arg(link.name()));
+    fflush(stdout);
+    stopOnSignals();
+    return QCoreApplication::exec();
+}
+
+int syncInstall(const QString &dataOverride, bool remove) {
+    QDir units(systemdUserDirectory());
+    const QString systemctl = QStandardPaths::findExecutable("systemctl");
+    if (remove) {
+        if (!units.exists(LinkService))
+            return fail("Nothing to remove; no " + LinkService + " in " + units.path());
+        if (!systemctl.isEmpty())
+            QProcess::execute(systemctl, {"--user", "disable", "--now", LinkService});
+        units.remove(LinkService);
+        print(stdout, "Removed " + units.filePath(LinkService));
+        if (!systemctl.isEmpty())
+            QProcess::execute(systemctl, {"--user", "daemon-reload"});
+        return 0;
+    }
+    if (systemctl.isEmpty())
+        return fail("This needs systemd's user services to keep the link running.");
+    if (!units.mkpath("."))
+        return fail("Could not create " + units.path());
+    const auto files = linkUnits(QCoreApplication::applicationFilePath(), dataOverride);
+    for (auto it = files.begin(); it != files.end(); ++it) {
+        QSaveFile file(units.filePath(it.key()));
+        if (!file.open(QIODevice::WriteOnly) || file.write(it.value()) < 0 || !file.commit())
+            return fail("Could not write " + file.fileName());
+        print(stdout, "Wrote " + file.fileName());
+    }
+    QProcess::execute(systemctl, {"--user", "daemon-reload"});
+    if (QProcess::execute(systemctl, {"--user", "enable", "--now", LinkService}) != 0)
+        return fail("Could not start it: systemctl --user enable --now " + LinkService);
+    print(stdout, "The link to your paired computers stays up while this computer is on.\n"
+                  "Stop with: needful sync uninstall");
+    return 0;
+}
+
+int syncPeers(const Command &command, const QString &action, const QStringList &rest, const QString &usual) {
+    const QString appDir = PeerLink::appDirFor(usual);
+    Devices devices(appDir);
+    QString error;
+    if (!devices.load(&error))
+        return fail(error);
+    const QDateTime now = QDateTime::currentDateTime();
+    const QString wanted = rest.value(0).trimmed();
+    auto findDevice = [&](std::optional<Devices::Device> *found) {
+        if (wanted.isEmpty()) {
+            print(stderr, "Name a paired computer. See: needful sync status");
+            return false;
+        }
+        *found = devices.find(wanted);
+        if (!*found || !(*found)->paired) {
+            print(stderr, QString("No paired computer named %1. See: needful sync status").arg(wanted));
+            return false;
+        }
+        return true;
+    };
+
+    if (action == "unpair") {
+        std::optional<Devices::Device> found;
+        if (!findDevice(&found))
+            return 1;
+        devices.unpair(found->id, now);
+        if (!devices.save(&error))
+            return fail(error);
+        if (command.wantsJson())
+            printJson(QJsonObject{{"unpaired", found->name}, {"fingerprint", found->fingerprint()}});
+        else
+            print(stdout, QString("Unpaired \"%1\". It can no longer connect. Its changes stay.").arg(found->name));
+        return 0;
+    }
+    if (action == "reach") {
+        const bool self = wanted.compare(devices.name(), Qt::CaseInsensitive) == 0;
+        std::optional<Devices::Device> found;
+        if (self)
+            found = devices.device(devices.id());
+        else if (!findDevice(&found))
+            return 1;
+        const QString host = rest.mid(1).join(' ').trimmed();
+        if (host.isEmpty()) {
+            print(stdout, found->reach.isEmpty() ? QString("Looking for \"%1\" only on this network.").arg(found->name)
+                                                 : QString("Looking for \"%1\" at %2.").arg(found->name, found->reach.join(", ")));
+            return 0;
+        }
+        QStringList hosts = found->reach;
+        if (host == "off" || host == "none") {
+            hosts.clear();
+        } else if (!hosts.contains(host)) {
+            hosts.append(host);
+        }
+        devices.setReach(found->id, hosts, now);
+        if (!devices.save(&error))
+            return fail(error);
+        print(stdout, hosts.isEmpty() ? QString("Will look for \"%1\" only on this network.").arg(found->name)
+                                      : QString("Will also look for \"%1\" at %2.").arg(found->name, host));
+        return 0;
+    }
+    // action == "relay"
+    const QString url = wanted;
+    if (url.isEmpty()) {
+        print(stdout, devices.relay().isEmpty() ? QString("No relay. Paired computers connect only when one can reach the other.")
+                                                : "Relay: " + devices.relay());
+        return 0;
+    }
+    if (url == "off" || url == "none") {
+        devices.setRelay({}, now);
+        if (!devices.save(&error))
+            return fail(error);
+        print(stdout, "No relay. Paired computers connect only when one can reach the other.");
+        return 0;
+    }
+    const QUrl parsed(url);
+    if (!parsed.isValid() || (parsed.scheme() != "https" && parsed.scheme() != "http") || parsed.host().isEmpty())
+        return fail("Give the relay's address, like https://relay.example.net");
+    devices.setRelay(url, now);
+    if (!devices.save(&error))
+        return fail(error);
+    print(stdout, QString("Paired computers that can't reach each other will meet through\n"
+                          "%1. It passes along encrypted traffic and can't read it.").arg(parsed.host()));
+    return 0;
+}
+
+// sync status for a computer with paired computers.
+int peerStatus(const Command &command, const Backend &backend, const SyncFolder *folder, const QString &usual) {
+    const PeerStatus status = PeerStatus::read(PeerLink::appDirFor(usual), folder);
+    QSet<QString> shown;
+    if (command.wantsJson()) {
+        QJsonArray machines;
+        for (const auto &e : status.devices) {
+            machines.append(QJsonObject{
+                {"name", e.device.name},
+                {"fingerprint", e.device.fingerprint()},
+                {"link", e.link.isEmpty() ? QJsonValue() : QJsonValue(e.link)},
+                {"lastSeen", e.seen.isValid() ? QJsonValue(e.seen.toString(Qt::ISODateWithMs)) : QJsonValue()},
+                {"lastChange", e.changed.isValid() ? QJsonValue(e.changed.toString(Qt::ISODateWithMs)) : QJsonValue()},
+                {"reach", QJsonArray::fromStringList(e.device.reach)}});
+        }
+        QJsonObject out{{"this", status.name},
+                        {"fingerprint", status.fingerprint},
+                        {"running", status.running},
+                        {"relay", status.relay.isEmpty() ? QJsonValue() : QJsonValue(status.relay)},
+                        {"machines", machines}};
+        if (folder && !QDir::cleanPath(folder->folder()).startsWith(PeerLink::appDirFor(usual) + "/lists/"))
+            out["folder"] = folder->folder();
+        printJson(out);
+        return 0;
+    }
+    int width = 6;
+    for (const auto &e : status.devices)
+        width = std::max(width, int(e.device.name.size()));
+    print(stdout, QString("This").leftJustified(width + 2) + status.name + "  " + status.fingerprint);
+    if (folder && !QDir::cleanPath(folder->folder()).startsWith(PeerLink::appDirFor(usual) + "/lists/"))
+        print(stdout, QString("Folder").leftJustified(width + 2) + shortPath(folder->folder()));
+    for (const auto &e : status.devices) {
+        const QString link = e.link.isEmpty() ? unreachableText(e.seen, status.running) : linkName(e.link);
+        const QString change = !e.changed.isValid() ? QString("no changes yet")
+                               : e.changed.daysTo(QDateTime::currentDateTime()) < 7
+                                   ? "last change " + backend.heardText(e.changed)
+                                   : "last change " + e.changed.toLocalTime().date().toString(Qt::ISODate);
+        print(stdout, e.device.name.leftJustified(width + 2) + link + QString::fromUtf8(" · ") + change);
+        shown.insert(e.device.id);
+    }
+    // Machines that sync only through the folder, and ones unpaired since.
+    if (folder) {
+        const auto files = folder->files();
+        for (const auto &m : folder->machines()) {
+            const QString device = files.value(m.id).device;
+            if (m.forgotten || m.id == folder->machine() || shown.contains(device))
+                continue;
+            print(stdout, m.name.leftJustified(width + 2) + (device.isEmpty() ? "through the folder" : "unpaired") +
+                              QString::fromUtf8(" · ") +
+                              (m.changed.isValid() ? "last change " + backend.heardText(m.changed) : QString("no changes yet")));
+        }
+    }
+    if (status.devices.isEmpty())
+        print(stdout, "\nNo paired computers. Pair one with: needful sync pair");
+    if (!status.running && !status.devices.isEmpty())
+        print(stdout, "\nNeedful isn't running here, so nothing is passed along until it is. Open the window, or "
+                      "keep it running with: needful sync install");
+    if (!status.relay.isEmpty())
+        print(stdout, "Relay  " + status.relay);
+    return 0;
+}
+
 int sync(const QStringList &arguments) {
-    Command command("sync", "Keep the same Needful on your computers, through a folder a sync tool keeps in step.");
-    command.parser.addPositionalArgument("action", "setup <folder>, status, rename <name>, forget <machine>, or rsync install <host> / rsync uninstall",
+    Command command("sync", "Keep the same Needful on your computers: paired with each other by code, or through "
+                            "a folder a sync tool keeps in step.");
+    command.parser.addPositionalArgument("action", "pair, join <code>, status, unpair <machine>, reach <machine> <host>, "
+                                                   "relay <url>|off, install, uninstall, setup <folder>, rename <name>, "
+                                                   "forget <machine>, or rsync install <host> / rsync uninstall",
                                          "<action>");
+    command.parser.addOption({"at", "With join: the other computer's address, when it isn't on this network", "host"});
+    command.parser.addOption({"yes", "With join: pair without asking"});
     command.parser.addOption({"name", "With setup: what to call this machine (its host name by default)", "name"});
     command.parser.addOption({"remote-folder", "With rsync install: the sync folder on the other computer "
                                                "(the same path as here, from its home folder)", "path"});
@@ -535,6 +906,29 @@ int sync(const QStringList &arguments) {
     command.parser.process(arguments);
     const QString action = command.argument(1), argument = command.parser.positionalArguments().mid(2).join(' ');
     const QString dataPath = command.dataPath().isEmpty() ? Backend::defaultDataPath() : command.dataPath();
+    // Pairing is for the whole install, whichever universe is asked about.
+    const QString usual = command.parser.isSet("data") ? command.parser.value("data") : Backend::defaultDataPath();
+    if (action == "pair")
+        return syncPair(usual);
+    if (action == "join") {
+        if (command.argument(2).isEmpty())
+            return fail("Type the code the other computer shows: needful sync join 7-violet-crumble-tango");
+        return syncJoin(usual, command.parser.positionalArguments().mid(2).join('-'), command.parser.value("at"),
+                        command.parser.isSet("yes"));
+    }
+    if (action == "link")
+        return syncLinkCommand(usual);
+    if (action == "install" || action == "uninstall")
+        return syncInstall(command.parser.isSet("data") ? QFileInfo(usual).absoluteFilePath()
+                                                        : qEnvironmentVariable("NEEDFUL_DATA"),
+                           action == "uninstall");
+    if (action == "unpair" || action == "reach" || action == "relay")
+        return syncPeers(command, action, command.parser.positionalArguments().mid(2), usual);
+    // Once this computer has paired, its status is about its computers.
+    const bool peers = QFile::exists(PeerLink::appDirFor(usual) + "/devices.json") && [&] {
+        Devices devices(PeerLink::appDirFor(usual));
+        return devices.load(nullptr, false) && !devices.id().isEmpty() && !devices.devices().isEmpty();
+    }();
 
     if (action == "setup") {
         if (argument.trimmed().isEmpty())
@@ -596,6 +990,8 @@ int sync(const QStringList &arguments) {
         if (!m.forgotten)
             machines.append(m);
 
+    if ((action == "status" || action.isEmpty()) && peers)
+        return peerStatus(command, backend, folder, usual);
     if (action == "status" || action.isEmpty()) {
         if (command.wantsJson()) {
             QJsonArray array;
@@ -626,6 +1022,14 @@ int sync(const QStringList &arguments) {
         QString error;
         if (!folder->rename(argument, &error))
             return fail(error);
+        if (peers) {
+            // Your paired computers show it by the same name.
+            Devices devices(PeerLink::appDirFor(usual));
+            if (devices.load(&error)) {
+                devices.setName(devices.id(), folder->name(), QDateTime::currentDateTime());
+                devices.save(&error);
+            }
+        }
         print(stdout, QString("This machine is now \"%1\".").arg(folder->name()));
         return 0;
     }
@@ -650,8 +1054,8 @@ int sync(const QStringList &arguments) {
                                count(found->records), found->records == 1 ? "change" : "changes"));
         return 0;
     }
-    return fail("Use needful sync setup <folder>, sync status, sync rename <name>, sync forget <machine>, "
-                "or sync rsync install <host>.");
+    return fail("Use needful sync pair, sync join <code>, sync status, sync unpair <machine>, sync setup <folder>, "
+                "sync rename <name>, sync forget <machine>, or sync rsync install <host>.");
 }
 
 int universe(const QStringList &arguments) {
@@ -762,6 +1166,10 @@ QString cliSummary() {
            "  universe remove <name>           Stop listing it on this computer\n"
            "  --universe <name>                Any command, or open, on that universe\n\n"
            "Your other computers (needful help sync):\n"
+           "  sync pair                        Show a code for another computer to join with\n"
+           "  sync join <code> [--at host]     Pair with the computer showing the code, joining its list\n"
+           "  sync unpair <machine>            Stop trusting a paired computer; its changes stay\n"
+           "  sync install                     Keep the link up here as a user service\n"
            "  sync setup <folder>              Keep this machine in step through a synced folder\n"
            "  sync status                      When each machine's changes were last seen\n"
            "  sync rename <name>               Change how this machine is shown\n"

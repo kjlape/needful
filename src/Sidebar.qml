@@ -13,6 +13,9 @@ Rectangle {
     signal addContext(int parent)
     signal renameContext(var context)
     signal removeContext(var context)
+    signal pairComputer()
+    signal joinComputer()
+    signal unpairComputer(var device)
 
     component SideItem: ItemDelegate {
         id: item
@@ -57,13 +60,49 @@ Rectangle {
         anchors.topMargin: 18
         spacing: 1
 
-        Label {
-            text: "Needful"
-            font.pixelSize: 18
-            font.bold: true
-            color: theme.accent
-            Layout.leftMargin: 16
+        RowLayout {
+            Layout.fillWidth: true
             Layout.bottomMargin: backend.universes.length > 1 ? 8 : 14
+            Label {
+                text: "Needful"
+                font.pixelSize: 18
+                font.bold: true
+                color: theme.accent
+                Layout.leftMargin: 16
+                Layout.fillWidth: true
+            }
+            ToolButton {
+                text: "\u22ef"
+                font.pixelSize: 16
+                implicitHeight: 30
+                implicitWidth: 30
+                onClicked: sidebarMenu.popup()
+                ToolTip.visible: hovered
+                ToolTip.delay: 600
+                ToolTip.text: qsTr("Your computers")
+                Menu {
+                    id: sidebarMenu
+                    Material.roundedScale: theme.radius
+                    MenuItem { text: qsTr("Pair a computer…"); onTriggered: sidebar.pairComputer() }
+                    MenuItem { text: qsTr("Join a computer…"); onTriggered: sidebar.joinComputer() }
+                    Menu {
+                        id: unpairMenu
+                        title: qsTr("Unpair")
+                        enabled: peers.devices.length > 0
+                        Material.roundedScale: theme.radius
+                        Instantiator {
+                            model: peers.devices
+                            delegate: MenuItem {
+                                required property var modelData
+                                text: modelData.name + "  " + modelData.fingerprint
+                                onTriggered: sidebar.unpairComputer(modelData)
+                            }
+                            onObjectAdded: (index, object) => unpairMenu.insertItem(index, object)
+                            onObjectRemoved: (index, object) => unpairMenu.removeItem(object)
+                        }
+                    }
+                }
+            }
         }
 
         // Other universes, one click (or U) away; yours is where it starts.

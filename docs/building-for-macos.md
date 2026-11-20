@@ -12,6 +12,9 @@ working version is `bin/build-macos`; this explains why each step is there.
   `~/Qt/<version>/macos/`, which Homebrew does not put on `PATH`. The script
   looks there when `qmake6` is not on `PATH`.
 - `rsvg-convert` (`brew install librsvg`) to turn the app's SVG into icons.
+- Rust's `cargo` (from rustup), for the peer sync link in `link/`. `make`
+  runs it, and links its static library with the Security,
+  CoreFoundation and SystemConfiguration frameworks.
 - Nothing else. `qmake`, `macdeployqt`, `iconutil`, `PlistBuddy`, `codesign`
   and `hdiutil` all ship with Qt or macOS.
 

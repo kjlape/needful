@@ -3,6 +3,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
@@ -10,6 +11,8 @@
 #include <algorithm>
 
 #include "backend.h"
+#include "store.h"
+#include "sync.h"
 
 QString Universe::label() const {
     if (name == Universes::Mine)
@@ -70,7 +73,7 @@ QString Universes::add(const QString &name, QString *error) {
             return u.dataPath; // Already here.
     const QString path = QFileInfo(registryPath()).absolutePath() + "/universes/" + name + ".json";
     list.append({name, path});
-    return save(list, error) ? path : QString();
+    return save(list, error, hidden()) ? path : QString();
 }
 
 bool Universes::remove(const QString &name, QString *error) {
@@ -80,21 +83,44 @@ bool Universes::remove(const QString &name, QString *error) {
     }
     QList<Universe> list = others();
     const qsizetype before = list.size();
+    QStringList hide = hidden();
+    for (const Universe &u : list) {
+        if (u.name != name)
+            continue;
+        QFile file(u.dataPath);
+        SyncFolder::Pointer pointer;
+        if (file.open(QIODevice::ReadOnly) && SyncFolder::readPointer(file.readAll(), &pointer)) {
+            SyncFolder folder(pointer.folder, pointer.machine);
+            Store ignored;
+            if (folder.read(&ignored, nullptr) && !folder.listId().isEmpty() && !hide.contains(folder.listId()))
+                hide.append(folder.listId());
+        }
+    }
     list.removeIf([&](const Universe &u) { return u.name == name; });
     if (list.size() == before) {
         if (error) *error = QString("No universe named %1. See: needful universe").arg(name);
         return false;
     }
-    return save(list, error);
+    return save(list, error, hide);
 }
 
-bool Universes::save(const QList<Universe> &others, QString *error) const {
+QStringList Universes::hidden() const {
+    QFile file(registryPath());
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    QStringList ids;
+    for (const auto &id : QJsonDocument::fromJson(file.readAll()).object().value("hidden").toArray())
+        ids.append(id.toString());
+    return ids;
+}
+
+bool Universes::save(const QList<Universe> &others, QString *error, const QStringList &hidden) const {
     QJsonObject names;
     for (const Universe &u : others)
         names[u.name] = u.dataPath;
     QSaveFile file(registryPath());
     if (!QDir().mkpath(QFileInfo(registryPath()).absolutePath()) || !file.open(QIODevice::WriteOnly) ||
-        file.write(QJsonDocument(QJsonObject{{"universes", names}}).toJson()) < 0 || !file.commit()) {
+        file.write(QJsonDocument(QJsonObject{{"universes", names}, {"hidden", QJsonArray::fromStringList(hidden)}}).toJson()) < 0 || !file.commit()) {
         if (error) *error = QString("Could not save %1: %2").arg(registryPath(), file.errorString());
         return false;
     }

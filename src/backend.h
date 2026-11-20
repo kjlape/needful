@@ -118,6 +118,8 @@ private:
     bool persist(QString *message);
     void loadUniverses();
     void updateSync();
+    bool peerText(QString *text, bool *late) const;
+    QString appDir() const;
     void reloadFromDisk();
     enum CatchUp { Current, CaughtUp, Unreadable };
     CatchUp catchUp();
