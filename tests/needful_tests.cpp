@@ -1509,29 +1509,89 @@ private slots:
 
     // A list already shared through a sync tool's folder can't be swapped
     // for another computer's by joining it.
-    void peerSyncWontJoinOverAFolderList()
+    // A computer whose list syncs through a folder, with another machine on
+    // it, joins where it is: nothing has to live at the same path, and the
+    // other machine gets the joined list through the folder.
+    void peerSyncJoinsWhereItsFolderIs()
     {
         QTemporaryDir dir;
+        const QString desktopData = dir.filePath("d/needful.json"), laptopData = dir.filePath("l/needful.json"),
+                      tabletData = dir.filePath("t/needful.json");
+        const QString laptopFolder = dir.filePath("Sync/needful"), tabletFolder = dir.filePath("t-sync");
+        {
+            Backend desktop(desktopData);
+            desktop.saveTask({{"title", "Mow"}});
+            desktop.saveTask({{"title", "Oil change"}});
+            Backend laptop(laptopData);
+            const int mow = laptop.saveTask({{"title", "Mow"}});
+            laptop.saveTask({{"title", "Water the plants"}});
+            laptop.complete(mow, "front only");
+        }
+        SyncFolder::Setup result;
+        QString error;
+        QVERIFY2(SyncFolder::setup(laptopData, laptopFolder, "laptop", QDateTime::currentDateTime(), &result, &error),
+                 qPrintable(error));
+        copyNewer(laptopFolder, tabletFolder);
+        QVERIFY2(SyncFolder::setup(tabletData, tabletFolder, "tablet", QDateTime::currentDateTime(), &result, &error),
+                 qPrintable(error));
+        copyNewer(tabletFolder, laptopFolder);
+
         PeerLink::Options options;
         options.port = 0;
         options.mdns = false;
         options.loopback = true;
         options.ipc = false;
-        const QString laptopData = dir.filePath("l/needful.json");
-        SyncFolder::Setup result;
-        QString error;
-        QVERIFY(SyncFolder::setup(laptopData, dir.filePath("Sync/needful"), "laptop", QDateTime::currentDateTime(),
-                                  &result, &error));
-        PeerLink desktop(dir.filePath("d/needful.json"), options), laptop(laptopData, options);
+        PeerLink desktop(desktopData, options), laptop(laptopData, options);
         QVERIFY(desktop.start(&error) && laptop.start(&error));
-        QSignalSpy code(&desktop, &PeerLink::pairCode), failed(&laptop, &PeerLink::failed),
-            confirm(&laptop, &PeerLink::confirm);
+        QSignalSpy code(&desktop, &PeerLink::pairCode), confirm(&laptop, &PeerLink::confirm),
+            joined(&laptop, &PeerLink::joined), failed(&laptop, &PeerLink::failed);
         desktop.pair();
         QTRY_VERIFY(desktop.port() > 0);
         laptop.join(code.first().at(0).toString(), QString("127.0.0.1:%1").arg(desktop.port()));
-        QTRY_COMPARE_WITH_TIMEOUT(failed.size(), 1, 15000);
-        QVERIFY(failed.first().at(0).toString().contains("syncs through"));
-        QVERIFY(confirm.isEmpty());
+        QTRY_COMPARE_WITH_TIMEOUT(confirm.size(), 1, 15000);
+        laptop.answer(true);
+        QTRY_COMPARE_WITH_TIMEOUT(joined.size(), 1, 15000);
+        QVERIFY2(failed.isEmpty(), failed.isEmpty() ? "" : qPrintable(failed.first().at(0).toString()));
+        QCOMPARE(joined.first().at(0).toMap()["tasks"].toInt(), 1); // Only the plants were only here.
+
+        // Still in its own folder, with nothing left behind in staging.
+        SyncFolder::Pointer pointer;
+        QVERIFY(SyncFolder::readPointer(contentsOf(laptopData), &pointer));
+        QCOMPARE(QDir::cleanPath(pointer.folder), QDir::cleanPath(laptopFolder));
+        QVERIFY(QDir(dir.filePath("l/lists")).entryList(QDir::Dirs | QDir::NoDotAndDotDot).isEmpty());
+
+        auto titles = [](const QString &data) {
+            QStringList list;
+            const Backend backend(data);
+            for (const Task &t : backend.store().tasks)
+                list.append(t.title);
+            list.sort();
+            return list;
+        };
+        const QStringList all{"Mow", "Oil change", "Water the plants"};
+        QCOMPARE(titles(laptopData), all);
+        {
+            // Mow is the desktop's now, and keeps what was done to it here.
+            const Backend b(laptopData);
+            QCOMPARE(b.store().completions.size(), 1);
+            const Task *mow = nullptr;
+            for (const Task &t : b.store().tasks)
+                if (t.title == "Mow")
+                    mow = &t;
+            QVERIFY(mow);
+            QCOMPARE(b.store().completions.first().task, mow->id);
+            QCOMPARE(b.store().completions.first().note, QString("front only"));
+        }
+        QTRY_COMPARE_WITH_TIMEOUT(titles(desktopData), all, 15000);
+        // The tablet hears through the folder, as it always did.
+        copyNewer(laptopFolder, tabletFolder);
+        QCOMPARE(titles(tabletData), all);
+        {
+            Backend tablet(tabletData);
+            tablet.saveTask({{"title", "Sweep"}});
+        }
+        copyNewer(tabletFolder, laptopFolder);
+        QTRY_VERIFY_WITH_TIMEOUT(titles(desktopData).contains("Sweep"), 15000);
     }
 
     // Two computers already in step through a sync tool's folder pair, and

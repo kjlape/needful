@@ -569,7 +569,7 @@ bool SyncFolder::forget(const QString &machineId, QString *error) {
     return saveOwn(m_own, meta, error);
 }
 
-Store SyncFolder::combine(const Store &folder, const Store &local, Setup *counts) {
+Store SyncFolder::combine(const Store &folder, const Store &local, Setup *counts, Mapping *mapped) {
     Store out = folder;
     QHash<int, int> contexts, routines, tasks;
 
@@ -654,6 +654,8 @@ Store SyncFolder::combine(const Store &folder, const Store &local, Setup *counts
             continue;
         Completion copy = c;
         copy.id = out.nextId("completions");
+        if (mapped)
+            (*mapped)["completions"][c.id] = copy.id;
         copy.task = task;
         copy.context = contexts.value(c.context, 0);
         out.completions.append(copy);
@@ -680,12 +682,112 @@ Store SyncFolder::combine(const Store &folder, const Store &local, Setup *counts
             continue;
         LogEntry copy = e;
         copy.id = out.nextId("log");
+        if (mapped)
+            (*mapped)["log"][e.id] = copy.id;
         copy.context = context;
         copy.task = taskFor(e.task);
         out.log.append(copy);
         ++counts->history;
     }
+    if (mapped) {
+        (*mapped)["contexts"] = contexts;
+        (*mapped)["routines"] = routines;
+        (*mapped)["tasks"] = tasks;
+    }
     return out;
+}
+
+bool SyncFolder::mergeFrom(const QString &other, const QDateTime &now, Setup *result, QString *error) {
+    Store here, there;
+    if (!read(&here, error))
+        return false;
+    const auto hereIds = m_ids;
+    SyncFolder theirs(other, QString());
+    if (!theirs.read(&there, error))
+        return false;
+    QStringList taken;
+    for (const Machine &m : theirs.machines())
+        if (!m.forgotten) {
+            result->others.append(m.name);
+            taken.append(m.name.toLower());
+        }
+    result->joined = true;
+    Mapping mapped;
+    Store combined = combine(there, here, result, &mapped);
+
+    // Their files join this folder's, for every machine that reads it.
+    const QDir from(theirs.machinesPath());
+    for (const QString &file : from.entryList({"*.json"}, QDir::Files)) {
+        const QString machine = file.chopped(5);
+        if (machine == m_machine || !theirs.m_files.contains(machine))
+            continue;
+        const QString path = machinesPath() + "/" + file;
+        if (m_files.contains(machine) && !describe(theirs.m_files[machine]).newerThan(describe(m_files[machine])))
+            continue;
+        QFile in(from.filePath(file));
+        if (!in.open(QIODevice::ReadOnly) || !saveFile(path, in.readAll(), error))
+            return false;
+    }
+    Store both;
+    if (!read(&both, error))
+        return false;
+
+    // Written as a change from "their list, and this one's beside it, as
+    // stored", so what changes is only what combining changed: links that
+    // now go to their records, and records of this list's that went to one
+    // of theirs, which wait far past every number to be deleted.
+    QJsonObject base = QJsonDocument::fromJson(there.toJson()).object();
+    const QJsonObject mine = QJsonDocument::fromJson(here.toJson()).object();
+    auto ids = theirs.m_ids;
+    constexpr int Aside = 1 << 24;
+    QHash<QString, QHash<int, int>> numberOf; // list → number here → number in base
+    for (const QString &list : Lists) {
+        int aside = Aside;
+        for (auto n = hereIds[list].cbegin(); n != hereIds[list].cend(); ++n) {
+            const int to = mapped[list].value(n.key(), 0);
+            if (to && !theirs.m_ids[list].contains(to)) {
+                numberOf[list][n.key()] = to;
+                ids[list][to] = n.value();
+            } else {
+                numberOf[list][n.key()] = ++aside;
+                ids[list][aside] = n.value();
+            }
+        }
+    }
+    for (const QString &list : Lists) {
+        QJsonArray items = base.value(list).toArray();
+        for (const auto &value : mine.value(list).toArray()) {
+            QJsonObject item = value.toObject();
+            item["id"] = numberOf[list].value(item.value("id").toInt());
+            for (auto f = item.begin(); f != item.end(); ++f) {
+                const QString target = pointsInto(list, f.key());
+                if (!target.isEmpty() && f.value().toInt())
+                    f.value() = numberOf[target].value(f.value().toInt(), 0);
+            }
+            items.append(item);
+        }
+        base[list] = items;
+    }
+    if (!m_base.fromJson(QJsonDocument(base).toJson(QJsonDocument::Compact), error))
+        return false;
+    m_ids = ids; // m_folded stays: folding is within one task, so the same here.
+
+    // A name of its own among theirs.
+    const QString own = name();
+    QString chosen = own;
+    for (int n = 2; taken.contains(chosen.toLower()); ++n)
+        chosen = QString("%1-%2").arg(own).arg(n);
+    result->name = chosen;
+    if (!write(&combined, now, error))
+        return false;
+    // Their list's id, so their computers' lists don't change ids for it.
+    if (const QString list = theirs.listId(); !list.isEmpty() && m_meta.value("list").toString() != list) {
+        QJsonObject meta = m_meta;
+        meta["list"] = list;
+        if (!saveOwn(m_own, meta, error))
+            return false;
+    }
+    return chosen == own || rename(chosen, error);
 }
 
 bool SyncFolder::setup(const QString &dataPath, const QString &folder, const QString &name, const QDateTime &now,

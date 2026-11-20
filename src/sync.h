@@ -120,8 +120,18 @@ public:
     // files haven't reached yet.
     static bool setup(const QString &dataPath, const QString &folder, const QString &name, const QDateTime &now,
                       Setup *result, QString *error, const QString &defaultDataPath = {}, const QString &listId = {});
-    // Adds to `folder` what only `local` has; counts what it added.
-    static Store combine(const Store &folder, const Store &local, Setup *counts);
+    // Adds to `folder` what only `local` has; counts what it added. `mapped`,
+    // when given, says where each of local's records went, by list: to a
+    // record folder had already, or to a copy of its own.
+    using Mapping = QHash<QString, QHash<int, int>>;
+    static Store combine(const Store &folder, const Store &local, Setup *counts, Mapping *mapped = nullptr);
+    // Joins the list in `other` (another computer's machine files) where
+    // this one is, wherever this folder lives and whoever else shares it:
+    // their files are copied in and what only this list had is merged in,
+    // as setup does. Records this list had alone stay the same records, so
+    // the machines sharing this folder keep them; ones the other list had
+    // too are deleted here in favor of its own.
+    bool mergeFrom(const QString &other, const QDateTime &now, Setup *result, QString *error);
 
 private:
     using Fields = QJsonObject;                          // field → [value, stamp]

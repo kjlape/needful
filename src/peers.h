@@ -149,12 +149,12 @@ private:
     QHash<QString, QDateTime> m_seen;       // device → last connected
     QHash<QString, QStringList> m_addrs;    // device → addresses it was last reached at
     QHash<QString, QHash<QString, SyncFolder::File>> m_offered; // list → what was last offered
+    QHash<QString, QString> m_aliases; // another computer's id for a list → its id here
 
     QString m_pairCode;
     QTimer m_pairExpiry;
     QString m_joinCode, m_joinFrom;
     QJsonObject m_joinInfo;
-    bool m_refused = false;
     std::unique_ptr<Staging> m_staging;
 
     QFileSystemWatcher m_watcher;

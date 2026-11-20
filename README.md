@@ -157,7 +157,10 @@ needful sync forget old-thinkpad     # stop listing a machine you retired; its c
 ```
 
 A computer can sync through a folder, through its paired computers, or
-both, and pairing two computers that already share a folder loses nothing.
+both, and each keeps its list wherever it likes. One that syncs through a
+folder can join another computer's list: the list moves into that folder and
+reaches the machines sharing it too. Pairing two computers that already share
+a folder loses nothing.
 
 No sync tool? Any two computers that can reach each other over SSH can swap
 changes with plain rsync. After `sync setup` on both, run this on one of

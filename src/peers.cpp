@@ -265,21 +265,7 @@ void PeerLink::send(const QString &peer, const QJsonObject &message) {
 
 QJsonObject PeerLink::info() {
     List *own = mine();
-    int others = 0;
-    if (own && own->sync)
-        for (const auto &m : own->sync->machines())
-            if (m.id != own->machine && !m.forgotten)
-                ++others;
-    QJsonArray machines;
-    if (own && own->sync)
-        for (const QString &id : own->sync->files().keys())
-            machines.append(id);
-    return {{"needful", 1},
-            {"name", name()},
-            {"kind", "computer"},
-            {"mine", own ? own->id : QString()},
-            {"machines", machines},
-            {"others", others}};
+    return {{"needful", 1}, {"name", name()}, {"kind", "computer"}, {"mine", own ? own->id : QString()}};
 }
 
 QString PeerLink::failure(const QString &reason) const {
@@ -388,31 +374,6 @@ void PeerLink::handle(const QJsonObject &event) {
         handleMessage(id, parse(event.value("data").toString().toUtf8()));
     } else if (ev == "pair_confirm") {
         const QJsonObject theirs = event.value("info").toObject();
-        List *own = mine();
-        // The same list even with different ids, when a folder both used
-        // before gave each machine an id of its own.
-        bool shared = false;
-        if (own && own->sync)
-            for (const auto &m : theirs.value("machines").toArray())
-                shared = shared || own->sync->files().contains(m.toString());
-        const bool mineDiffers = own && own->id != theirs.value("mine").toString() && !shared;
-        const bool ownFolder = own && !QDir::cleanPath(own->folder).startsWith(QDir::cleanPath(m_dir) + "/lists/");
-        int others = 0;
-        if (own && own->sync)
-            for (const auto &m : own->sync->machines())
-                if (m.id != own->machine && !m.forgotten)
-                    ++others;
-        if (mineDiffers && own && (ownFolder || others > 0)) {
-            answer(false);
-            m_joinCode.clear();
-            m_refused = true; // Said here; the link's "declined" would say it again.
-            emit failed(ownFolder ? QString("This computer's list syncs through %1. Pair from a computer that "
-                                            "shares that folder, or join from a computer whose list isn't "
-                                            "synced yet.").arg(own->folder)
-                                  : "This computer's list is already shared with other computers. Join from a "
-                                    "computer that isn't paired yet, or pair this one with the others instead.");
-            return;
-        }
         m_joinInfo = theirs;
         emit confirm(theirs.value("name").toString(), Devices::fingerprintOf(id));
     } else if (ev == "paired") {
@@ -439,8 +400,6 @@ void PeerLink::handle(const QJsonObject &event) {
         m_stateDelay.start();
         emit changed();
     } else if (ev == "pair_failed") {
-        if (std::exchange(m_refused, false))
-            return;
         const QString message = failure(event.value("reason").toString());
         m_pairCode.clear();
         m_pairExpiry.stop();
@@ -631,8 +590,12 @@ void PeerLink::handleOffer(const QString &peer, const QJsonArray &lists) {
             if (!known.contains(it.key()) || theirs.newerThan(known[it.key()]))
                 wanted.append(it.key());
         }
+        // Until their files reach each other, two computers can each know
+        // the list by its own id; they ask for files by the other's.
+        if (id != local->id)
+            m_aliases[id] = local->id;
         if (!wanted.isEmpty())
-            send(peer, {{"t", "get"}, {"list", local->id}, {"machines", wanted}});
+            send(peer, {{"t", "get"}, {"list", id}, {"machines", wanted}});
     }
 }
 
@@ -665,7 +628,7 @@ void PeerLink::storeFile(const QString &peer, const QJsonObject &message) {
     QString folder, own;
     if (staged) {
         folder = m_staging->folder;
-    } else if (List *list = listById(listId)) {
+    } else if (List *list = listById(listId) ? listById(listId) : listById(m_aliases.value(listId))) {
         folder = list->folder;
         own = list->machine;
     } else {
@@ -699,28 +662,27 @@ void PeerLink::finishJoin() {
     const QString from = m_joinFrom;
     m_joinFrom.clear();
     if (m_staging) {
-        // A list of its own that nobody else shares yet goes back to one file
-        // first, so joining merges it like any unsynced list.
+        // A list already in a folder takes theirs in where it is: each
+        // computer keeps its files wherever it likes, and machines sharing
+        // that folder through a sync tool come along. One in a single file
+        // moves into theirs, merging as setup does.
         SyncFolder::Pointer pointer;
-        if (readPointerAt(m_usual, &pointer)) {
-            Store store;
-            SyncFolder folder(pointer.folder, pointer.machine);
-            QString error;
-            if (!folder.read(&store, &error) || !store.save(m_usual, &error)) {
-                m_staging.reset();
-                emit failed("Could not take in the other computer's list: " + error);
-                return;
-            }
-        }
         SyncFolder::Setup setup;
         QString error;
-        if (!SyncFolder::setup(m_usual, m_staging->folder, name(), QDateTime::currentDateTime(), &setup, &error,
-                               m_usual)) {
-            m_staging.reset();
+        bool ok;
+        if (readPointerAt(m_usual, &pointer) && !pointer.elsewhere()) {
+            SyncFolder folder(pointer.folder, pointer.machine);
+            ok = folder.mergeFrom(m_staging->folder, QDateTime::currentDateTime(), &setup, &error);
+            QDir(m_staging->folder).removeRecursively();
+        } else {
+            ok = SyncFolder::setup(m_usual, m_staging->folder, name(), QDateTime::currentDateTime(), &setup, &error,
+                                   m_usual);
+        }
+        m_staging.reset();
+        if (!ok) {
             emit failed("Could not take in the other computer's list: " + error);
             return;
         }
-        m_staging.reset();
         if (setup.name != name()) {
             m_devices.setName(m_devices.id(), setup.name, QDateTime::currentDateTime());
             saveDevices();
