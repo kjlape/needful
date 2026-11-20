@@ -87,7 +87,7 @@ timer, a helper daemon) becomes a launchd agent on macOS. Needful's
 examples.
 
 - **Where:** a plist at `~/Library/LaunchAgents/<label>.plist`. Name the label
-  after the bundle id plus the job (`faithbibleinstitute.needful.serve`), and
+  after the bundle id plus the job (`kjlape.needful.serve`), and
   the file after the label.
 - **Long-running job:** `RunAtLoad` and `KeepAlive` true, with
   `ThrottleInterval` (5) to match systemd's `RestartSec`. That replaces

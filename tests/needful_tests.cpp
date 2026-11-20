@@ -1123,21 +1123,21 @@ private slots:
         setup.tailscaled = "/opt/homebrew/bin/tailscaled";
         setup.stateDir = "/Users/me/Library/Application Support/needful/tailscale";
         const auto agents = launchAgents(setup);
-        QCOMPARE(agents.keys(), (QStringList{"faithbibleinstitute.needful.serve.plist",
-                                             "faithbibleinstitute.needful.tailscale.plist"}));
-        const QByteArray serve = agents["faithbibleinstitute.needful.serve.plist"];
-        QVERIFY(serve.contains("<string>faithbibleinstitute.needful.serve</string>"));
+        QCOMPARE(agents.keys(), (QStringList{"kjlape.needful.serve.plist",
+                                             "kjlape.needful.tailscale.plist"}));
+        const QByteArray serve = agents["kjlape.needful.serve.plist"];
+        QVERIFY(serve.contains("<string>kjlape.needful.serve</string>"));
         QVERIFY(serve.contains("<string>/Applications/Needful.app/Contents/MacOS/needful</string>\n"
                                "        <string>serve</string>\n        <string>--port</string>\n"
                                "        <string>9000</string>\n        <string>--data</string>\n"
                                "        <string>/Users/me/A &amp; B/needful.json</string>"));
         QVERIFY(serve.contains("<key>KeepAlive</key>"));
-        QVERIFY(agents["faithbibleinstitute.needful.tailscale.plist"].contains("<string>--tun=userspace-networking</string>"));
+        QVERIFY(agents["kjlape.needful.tailscale.plist"].contains("<string>--tun=userspace-networking</string>"));
         setup.tailscale = false;
         QCOMPARE(launchAgents(setup).size(), 1);
 
         setup.universe = "hers";
-        QCOMPARE(launchAgents(setup).keys(), (QStringList{"faithbibleinstitute.needful.serve-hers.plist"}));
+        QCOMPARE(launchAgents(setup).keys(), (QStringList{"kjlape.needful.serve-hers.plist"}));
     }
 
     void rsyncUnitsAreWritten()
@@ -1171,7 +1171,7 @@ private slots:
         setup.host = "desktop";
         setup.remote = "Sync/needful";
         setup.every = "10m";
-        const QByteArray agent = rsyncLaunchAgents(setup)["faithbibleinstitute.needful.rsync.plist"];
+        const QByteArray agent = rsyncLaunchAgents(setup)["kjlape.needful.rsync.plist"];
         QVERIFY(agent.contains("<key>StartInterval</key>\n    <integer>600</integer>"));
         QVERIFY(!agent.contains("KeepAlive"));
         QVERIFY(agent.contains("<string>/bin/sh</string>"));
@@ -1251,7 +1251,7 @@ private slots:
         qputenv("HOME", dir.path().toUtf8());
         qputenv("PATH", dir.filePath("empty").toUtf8());
         const QString folder = dir.filePath("Library/LaunchAgents/");
-        const QString mine = "faithbibleinstitute.needful.serve.plist", hersFile = "faithbibleinstitute.needful.serve-hers.plist";
+        const QString mine = "kjlape.needful.serve.plist", hersFile = "kjlape.needful.serve-hers.plist";
         const QByteArray port8899 = "<string>8899</string>";
         const QByteArray port8788 = "<string>8788</string>";
 #else
@@ -1739,7 +1739,7 @@ private slots:
     void linkLaunchAgentStaysUp()
     {
         const QByteArray agent = linkLaunchAgents("/Applications/Needful.app/Contents/MacOS/needful", {})[LinkAgent];
-        QVERIFY(agent.contains("<string>faithbibleinstitute.needful.link</string>"));
+        QVERIFY(agent.contains("<string>kjlape.needful.link</string>"));
         QVERIFY(agent.contains("<string>/Applications/Needful.app/Contents/MacOS/needful</string>\n"
                                "        <string>sync</string>\n        <string>link</string>\n    </array>"));
         QVERIFY(agent.contains("<key>KeepAlive</key>\n    <true/>"));

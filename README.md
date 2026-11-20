@@ -246,7 +246,7 @@ needful serve status    # http://127.0.0.1:8787/ and https://needful.<tailnet>.t
 ```
 
 On macOS the same command installs launchd agents in `~/Library/LaunchAgents`
-(`faithbibleinstitute.needful.serve`, plus `.tailscale` with `--tailscale`),
+(`kjlape.needful.serve`, plus `.tailscale` with `--tailscale`),
 loads them straight away, and they start again at every login. There is no
 `systemctl` step; `--tailscale` needs `brew install tailscale`. Logs are in
 `~/Library/Logs/needful-serve.log`. The agent runs the binary where it was

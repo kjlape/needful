@@ -61,7 +61,7 @@ constexpr bool OnMac = false;
 
 // launchd names a job by its label, and the agent's file is the label.plist.
 QString agentLabel(const QString &kind, const QString &universe) {
-    return "faithbibleinstitute.needful." + kind + suffix(universe);
+    return "kjlape.needful." + kind + suffix(universe);
 }
 // The service files this platform installs: systemd units or launchd agents.
 QString serveFile(const QString &universe) { return OnMac ? agentLabel("serve", universe) + ".plist" : serveUnit(universe); }
@@ -649,7 +649,7 @@ QMap<QString, QByteArray> rsyncUnits(const RsyncSetup &setup) {
     return units;
 }
 
-const QString RsyncAgent = "faithbibleinstitute.needful.rsync.plist";
+const QString RsyncAgent = "kjlape.needful.rsync.plist";
 
 QMap<QString, QByteArray> rsyncLaunchAgents(const RsyncSetup &setup) {
     // Both commands in one job, the pull first, stopping if it fails.
@@ -707,7 +707,7 @@ QMap<QString, QByteArray> linkUnits(const QString &needful, const QString &data)
                           "WantedBy=default.target\n"}};
 }
 
-const QString LinkAgent = "faithbibleinstitute.needful.link.plist";
+const QString LinkAgent = "kjlape.needful.link.plist";
 
 QMap<QString, QByteArray> linkLaunchAgents(const QString &needful, const QString &data) {
     QStringList link{needful, "sync", "link"};
