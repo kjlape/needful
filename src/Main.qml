@@ -93,6 +93,7 @@ ApplicationWindow {
     function editSelected() { if (hasSelection) editor.openFor(selected) }
     function completeSelected() { if (hasSelection) completeDialog.openFor(selected) }
     function snoozeSelected() { if (hasSelection) snoozeDialog.openFor(selected) }
+    function skipSelected() { if (hasSelection) completeDialog.openFor(selected, true) }
     function todaySelected() { if (hasSelection) backend.toggleToday(selectedId) }
     function deleteSelected() {
         if (backend.view === "history" && list.currentIndex >= 0) {
@@ -116,6 +117,7 @@ ApplicationWindow {
     Shortcut { sequence: "Space"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: win.completeSelected() }
     Shortcut { sequence: "T"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: win.todaySelected() }
     Shortcut { sequence: "S"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: win.snoozeSelected() }
+    Shortcut { sequence: "Shift+S"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: win.skipSelected() }
     Shortcut { sequences: ["N", StandardKey.New]; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: win.newTask() }
     Shortcut { sequences: ["E", "Return", "Enter"]; enabled: !win.dialogOpen && !search.activeFocus; context: Qt.ApplicationShortcut; onActivated: win.editSelected() }
     Shortcut { sequences: ["Delete", "X"]; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: win.deleteSelected() }
@@ -352,6 +354,7 @@ ApplicationWindow {
                 onCompleteRequested: win.completeSelected()
                 onTodayRequested: win.todaySelected()
                 onSnoozeRequested: win.snoozeSelected()
+                onSkipRequested: win.skipSelected()
                 onEditRequested: win.editSelected()
                 onDeleteRequested: win.deleteSelected()
                 onRemoveCompletion: id => confirm.ask(qsTr("Remove this entry from the history?"),

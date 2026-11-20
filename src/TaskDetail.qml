@@ -10,6 +10,7 @@ Rectangle {
     signal completeRequested()
     signal todayRequested()
     signal snoozeRequested()
+    signal skipRequested()
     signal editRequested()
     signal deleteRequested()
     signal removeCompletion(int id)
@@ -133,6 +134,13 @@ Rectangle {
                     text: pane.task.state === "snoozed" ? qsTr("Wake up") : qsTr("Snooze")
                     onClicked: pane.task.state === "snoozed" ? backend.unsnooze(pane.task.id) : pane.snoozeRequested()
                 }
+                Button {
+                    Layout.fillWidth: true
+                    Layout.columnSpan: 2
+                    flat: true
+                    text: qsTr("Skip this time")
+                    onClicked: pane.skipRequested()
+                }
                 Button { Layout.fillWidth: true; flat: true; text: qsTr("Edit"); onClicked: pane.editRequested() }
                 Button { Layout.fillWidth: true; flat: true; text: qsTr("Delete"); onClicked: pane.deleteRequested() }
             }
@@ -161,7 +169,12 @@ Rectangle {
                     RowLayout {
                         Layout.fillWidth: true
                         Label { text: entry.modelData.date; color: "#ececf0"; font.bold: true }
-                        Label { text: entry.modelData.ago; color: "#85858e"; Layout.fillWidth: true; elide: Text.ElideRight }
+                        Label {
+                            text: entry.modelData.skipped ? qsTr("%1 · skipped").arg(entry.modelData.ago) : entry.modelData.ago
+                            color: "#85858e"
+                            Layout.fillWidth: true
+                            elide: Text.ElideRight
+                        }
                         ToolButton {
                             text: "×"
                             implicitWidth: 28

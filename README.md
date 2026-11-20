@@ -21,6 +21,8 @@ one is. Pick from the top, and trust that nothing is forgotten.
 - **Today** is the day's inbox. Pull tasks into it with `T`; it starts clean
   every morning, and what's done shows below, crossed off.
 - **Snooze** hides a task for a while without pretending it's done.
+- **Skip** passes over one time of a task (it rained, the car was away) and
+  moves it on to the next, with why kept in its history.
 - **Schedules** repeat from when you did it, on a fixed rhythm however late,
   ask you when to come back each time you finish, or happen once. A task can
   be in season only some months; the time out of season doesn't count as late.
@@ -37,6 +39,7 @@ one is. Pick from the top, and trust that nothing is forgotten.
 | `Space` | Done, with a note |
 | `T` | Pull into today, or put back |
 | `S` | Snooze |
+| `Shift+S` | Skip this time, with why |
 | `N` | New task |
 | `L` | Log a note on a context, optionally to follow up |
 | `E` / `Enter` | Edit |
@@ -63,6 +66,7 @@ needful add "Change the air filter" --context Home --every 1m
 needful add "Mow the lawn" --context Home --every 1w --priority high --months 4-10
 needful add "Oil change" --context CR-V --context Tacoma --context Civic --every 6m
 needful done 3 --note "Mobil 1 5W-20, 84,210 mi"
+needful skip 5 --reason "Rained all weekend"
 needful log "Squeak from the front left at low speed" --context CR-V --follow-up
 needful history --context "White Honda CR-V" --search oil
 needful contexts add "Automotive/White Honda CR-V"

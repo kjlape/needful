@@ -60,15 +60,17 @@ struct Task {
     QDate created;
 };
 
-// A record of doing a task. It keeps the task's title and context as they
-// were, so history survives renaming, moving, or deleting the task.
+// A record of doing a task, or of skipping one time of it. It keeps the
+// task's title and context as they were, so history survives renaming,
+// moving, or deleting the task.
 struct Completion {
     int id = 0;
     int task = 0;
     QString title;
     int context = 0;
     QDateTime at;
-    QString note;
+    QString note;          // For a skip, why.
+    bool skipped = false;  // Passed over this time, not done.
 };
 
 // A note on a context: a squeak, a leak, an idea. It sits in the history
@@ -114,7 +116,8 @@ public:
     bool inContext(int contextId, int filter) const;
     int findContext(const QString &pathOrName) const; // Case-insensitive; "A/B" or "B".
     QList<Completion> history(int taskId) const;      // Newest first.
-    const Completion *lastDone(int taskId) const;
+    // The last time it was done; with skips, the last time it was done or skipped.
+    const Completion *lastDone(int taskId, bool skips = false) const;
 
     // The ranking.
     static bool inSeason(const Task &task, const QDate &day);
@@ -123,6 +126,7 @@ public:
     int overdueDays(const Task &task, const QDate &today) const;
     double needfulness(const Task &task, const QDate &today) const;
     QDate nextDue(const Task &task, const QDate &done) const; // Invalid for Once and Ask.
+    QDate afterSkip(const Task &task, const QDate &today) const; // Likewise.
 
     // Changes. Each returns false when the id is unknown.
     int addTask(Task task, const QDate &today);
@@ -140,6 +144,10 @@ public:
     // Records the completion and schedules the next time: for Ask tasks the
     // caller's nextDue, where an invalid date retires the task.
     bool complete(int id, const QDateTime &at, const QString &note, const QDate &askedNext = {});
+    // Passes over the time it's next due without doing it: the history says
+    // it was skipped, and why, and it moves on to the time after. A one-time
+    // task retires; for Ask tasks, as with complete.
+    bool skip(int id, const QDateTime &at, const QString &reason, const QDate &askedNext = {});
     bool removeCompletion(int id);
     // Notes. A follow-up becomes a one-time task in the same context.
     int addLog(int context, const QDateTime &at, const QString &text);

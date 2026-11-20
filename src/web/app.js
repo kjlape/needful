@@ -21,6 +21,11 @@ const S = {
   today: "Today",
   offToday: "Off today",
   snooze: "Snooze",
+  skip: "Skip this time",
+  skipIt: "Skip",
+  reason: "Why skip it this time? (optional)",
+  skippedMark: "Skipped",
+  markedSkipped: "Skipped: %1",
   wake: "Wake up",
   cancel: "Cancel",
   note: "Note for next time (optional)",
@@ -202,9 +207,11 @@ function historyRow(item, extra) {
   const isLog = item.kind === "log";
   const text = isLog ? (item.text || item.note || "") : item.note;
   return h("div", { class: "row history " + (extra || "") + (isLog ? " log" : "") },
-    h("span", { class: isLog ? "mark log" : "mark done", "aria-hidden": "true", text: isLog ? "✎" : "✓" }),
+    h("span", { class: isLog ? "mark log" : item.skipped ? "mark done skipped" : "mark done", "aria-hidden": "true",
+                text: isLog ? "✎" : item.skipped ? "↷" : "✓" }),
     h("span", { class: "row-body" },
       h("span", { class: "row-title" }, isLog ? S.log : item.title,
+        item.skipped ? h("span", { class: "badge", text: S.skippedMark }) : null,
         isLog && item.task ? h("span", { class: "badge",
           text: item.followUpDone ? S.followedUp : S.followUpDue.replace("%1", item.followUpDueText || "") }) : null),
       item.contextPath ? h("span", { class: "row-meta", text: item.contextPath }) : null,
@@ -260,12 +267,14 @@ async function openTask(id) {
     h("button", {
       type: "button", class: "btn", text: snoozed ? S.wake : S.snooze,
       onclick: () => snoozed ? (close(), act(api("/api/task/" + id + "/unsnooze", {}))) : showSnooze(task),
-    }));
+    }),
+    h("button", { type: "button", class: "btn", text: S.skip, onclick: () => showDone(task, true) }));
 
   const history = h("div", { class: "history-list" }, h("h3", { text: S.history }),
     (task.history || []).length
       ? task.history.slice(0, 8).map((entry) => h("div", { class: "history-entry" },
           h("b", { text: entry.date }), " ", h("span", { class: "dim", text: entry.ago }),
+          entry.skipped ? h("span", { class: "badge", text: S.skippedMark }) : null,
           entry.note ? h("div", { class: "notes", text: entry.note }) : null))
       : h("p", { class: "dim", text: S.notDoneYet }));
 
@@ -290,10 +299,11 @@ function showSnooze(task) {
     h("button", { type: "button", class: "btn quiet", text: S.cancel, onclick: () => openTask(task.id) }));
 }
 
-function showDone(task) {
+// Done, or with skipping, passed over this time with a reason.
+function showDone(task, skipping) {
   const sheet = $("#task-sheet");
   const asks = task.scheduleKind === "ask";
-  const note = h("textarea", { name: "note", rows: "3", placeholder: S.note });
+  const note = h("textarea", { name: "note", rows: "3", placeholder: skipping ? S.reason : S.note });
   let next = after(1, "m");
   const nextField = h("input", { type: "date", name: "next", value: next });
   nextField.addEventListener("change", () => { next = nextField.value; mark(); });
@@ -318,18 +328,22 @@ function showDone(task) {
     onsubmit: (event) => {
       event.preventDefault();
       sheet.close();
-      const body = { note: note.value, next: asks && !notAgain.checked ? next : "" };
-      act(api("/api/task/" + task.id + "/done", body), S.markedDone.replace("%1", task.title));
+      const nextDue = asks && !notAgain.checked ? next : "";
+      if (skipping)
+        act(api("/api/task/" + task.id + "/skip", { reason: note.value, next: nextDue }), S.markedSkipped.replace("%1", task.title));
+      else
+        act(api("/api/task/" + task.id + "/done", { note: note.value, next: nextDue }), S.markedDone.replace("%1", task.title));
     },
   },
   note,
   asks
     ? [h("label", {}, S.comeBack, h("div", { class: "choices" }, choiceButtons), nextField),
        h("label", { class: "check" }, notAgain, S.notAgain)]
-    : h("p", { class: "dim", text: task.scheduleKind === "once" ? S.doneForGood
+    : h("p", { class: "dim", text: skipping ? task.skipText
+                                   : task.scheduleKind === "once" ? S.doneForGood
                                    : S.comesBack.replace("%1", (task.scheduleText || "").toLowerCase()) }),
   h("div", { class: "actions" },
-    h("button", { type: "submit", class: "btn primary", text: S.markDone }),
+    h("button", { type: "submit", class: "btn primary", text: skipping ? S.skipIt : S.markDone }),
     h("button", { type: "button", class: "btn quiet", text: S.cancel, onclick: () => openTask(task.id) })));
 
   $("#task-panel").replaceChildren(form);

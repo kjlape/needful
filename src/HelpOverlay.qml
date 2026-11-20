@@ -13,6 +13,7 @@ Rectangle {
         ["Space", qsTr("Done, with a note")],
         ["T", qsTr("Pull into today, or put back")],
         ["S", qsTr("Snooze")],
+        ["Shift+S", qsTr("Skip this time, with why")],
         ["N", qsTr("New task")],
         ["L", qsTr("Log a note on a context")],
         ["E / Enter", qsTr("Edit")],

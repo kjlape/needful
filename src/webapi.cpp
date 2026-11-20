@@ -97,7 +97,7 @@ HttpResponse WebApi::route(const HttpRequest &request) {
         return addTask(body);
     if (path == "/api/log")
         return addLog(body);
-    static const QRegularExpression actionPath("^/api/task/(\\d+)/(done|today|snooze|unsnooze)$");
+    static const QRegularExpression actionPath("^/api/task/(\\d+)/(done|skip|today|snooze|unsnooze)$");
     const auto match = actionPath.match(path);
     if (match.hasMatch())
         return taskAction(match.captured(1).toInt(), match.captured(2), body);
@@ -146,11 +146,14 @@ QJsonObject WebApi::taskJson(int id) const {
 HttpResponse WebApi::taskAction(int id, const QString &action, const QVariantMap &body) {
     if (!m_backend->store().task(id))
         return HttpResponse::error(404, "No such task");
-    if (action == "done") {
+    if (action == "done" || action == "skip") {
         const QString next = body.value("next").toString();
         if (!next.isEmpty() && !QDate::fromString(next, Qt::ISODate).isValid())
             return HttpResponse::error(400, "next takes a date like 2026-05-01");
-        m_backend->complete(id, body.value("note").toString(), next);
+        if (action == "done")
+            m_backend->complete(id, body.value("note").toString(), next);
+        else
+            m_backend->skip(id, body.value("reason").toString(), next);
     } else if (action == "today") {
         m_backend->toggleToday(id);
     } else if (action == "snooze") {

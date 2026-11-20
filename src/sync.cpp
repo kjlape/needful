@@ -280,7 +280,9 @@ void SyncFolder::materialize(Store *store) {
         return numbers[target].value(id, 0);
     };
 
-    // Done on two machines the same day is one completion, keeping both notes.
+    // Done on two machines the same day is one completion, keeping both
+    // notes; skipped on both, one skip. Done on one and skipped on the other
+    // stays as both.
     m_folded.clear();
     QSet<QString> folded;
     QHash<QString, QString> notes;
@@ -289,7 +291,8 @@ void SyncFolder::materialize(Store *store) {
         const Fields &f = m_merged["completions"][id];
         const QString task = valueOf(f, "task").toString();
         if (!task.isEmpty())
-            sameDay[task + "|" + readTime(valueOf(f, "at")).date().toString(Qt::ISODate)].append(id);
+            sameDay[task + "|" + readTime(valueOf(f, "at")).date().toString(Qt::ISODate) +
+                    (valueOf(f, "skipped").toBool() ? "|skipped" : "")].append(id);
     }
     for (QStringList &group : sameDay) {
         if (group.size() < 2)
@@ -662,7 +665,7 @@ Store SyncFolder::combine(const Store &folder, const Store &local, Setup *counts
         ++counts->history;
     }
     for (const auto &[t, id] : matched) {
-        const Completion *here = local.lastDone(t->id);
+        const Completion *here = local.lastDone(t->id, true);
         if (!here || (lastThere.contains(id) && lastThere[id] >= here->at))
             continue;
         Task *there = out.task(id);

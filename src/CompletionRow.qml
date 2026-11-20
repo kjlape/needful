@@ -3,7 +3,8 @@ import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
 
-// One entry in the history: what was done, when, and the note left for next time.
+// One entry in the history: what was done, or skipped, when, and the note
+// left for next time, or why it was skipped.
 Rectangle {
     id: row
     property var entry: ({})
@@ -35,14 +36,20 @@ Rectangle {
             radius: 11
             color: Qt.rgba(1, 1, 1, 0.06)
             Layout.alignment: Qt.AlignTop
-            Label { anchors.centerIn: parent; text: "✓"; color: theme.accent; font.pixelSize: 12; font.bold: true }
+            Label {
+                anchors.centerIn: parent
+                text: row.entry.skipped ? "↷" : "✓"
+                color: row.entry.skipped ? "#85858e" : theme.accent
+                font.pixelSize: 12
+                font.bold: true
+            }
         }
 
         ColumnLayout {
             Layout.fillWidth: true
             spacing: 3
             Label {
-                text: row.entry.title || ""
+                text: row.entry.skipped ? qsTr("Skipped: %1").arg(row.entry.title || "") : row.entry.title || ""
                 color: row.compact ? "#9a9aa3" : "#ececf0"
                 font.pixelSize: row.compact ? 14 : 15
                 font.strikeout: row.compact

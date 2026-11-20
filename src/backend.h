@@ -82,6 +82,8 @@ public:
     Q_INVOKABLE int saveTask(const QVariantMap &fields); // id 0 adds a task.
     Q_INVOKABLE void removeTask(int id);
     Q_INVOKABLE void complete(int id, const QString &note, const QString &nextDue = {});
+    // Passes over this time without doing it, with why for the history.
+    Q_INVOKABLE void skip(int id, const QString &reason, const QString &nextDue = {});
     Q_INVOKABLE void snooze(int id, int days);
     Q_INVOKABLE void unsnooze(int id);
     Q_INVOKABLE void toggleToday(int id);

@@ -621,6 +621,10 @@ QVariantMap Backend::describe(const Task &t, const QDate &today) const {
             {"dueText", dueText(t, today)},
             {"scheduleText", scheduleText(t)},
             {"seasonText", seasonText(t)},
+            {"skipText", t.schedule.kind == Schedule::Once ? tr("It won't come back.")
+                         : t.schedule.kind == Schedule::Ask
+                             ? QString()
+                             : tr("It comes back %1.").arg(QLocale().toString(m_store.afterSkip(t, today), QLocale::LongFormat))},
             {"lastDone", last ? tr("Last done %1").arg(agoText(last->at.date(), today)) : tr("Never done")}};
 }
 
@@ -631,6 +635,7 @@ QVariantMap Backend::describe(const Completion &c) const {
             {"task", c.task},
             {"title", c.title},
             {"note", c.note},
+            {"skipped", c.skipped},
             {"contextPath", m_store.contextPath(c.context)},
             {"date", locale.toString(c.at.date(), QLocale::ShortFormat)},
             {"time", locale.toString(c.at.time(), QLocale::ShortFormat)},
@@ -829,6 +834,13 @@ void Backend::complete(int id, const QString &note, const QString &nextDue) {
     });
 }
 
+void Backend::skip(int id, const QString &reason, const QString &nextDue) {
+    change([&] {
+        const QDateTime at = now();
+        return m_store.skip(id, at, reason, QDate::fromString(nextDue, Qt::ISODate));
+    });
+}
+
 void Backend::snooze(int id, int days) {
     change([&] {
         Task *t = m_store.task(id);
@@ -943,7 +955,8 @@ QString Backend::formatDate(const QString &text) const {
 // For a task that asks when to come back, start from the gap it had last
 // time, so a rhythm emerges without being set.
 QString Backend::suggestedNext(int id) const {
-    const QList<Completion> history = m_store.history(id);
+    QList<Completion> history = m_store.history(id);
+    history.removeIf([](const Completion &c) { return c.skipped; });
     if (history.size() >= 2) {
         const qint64 gap = history[1].at.date().daysTo(history[0].at.date());
         if (gap > 0)

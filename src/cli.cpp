@@ -264,6 +264,33 @@ int done(const QStringList &arguments) {
     return 0;
 }
 
+int skip(const QStringList &arguments) {
+    Command command("skip", "Skip the time a task is next due without doing it, with an optional reason for its history.");
+    command.parser.addPositionalArgument("task", "The task's number, from needful list", "<task>");
+    command.parser.addOption({"reason", "Why it was skipped this time", "text"});
+    command.parser.addOption({"next", "For tasks that ask: when it's next due, YYYY-MM-DD", "date"});
+    command.json();
+    command.parser.process(arguments);
+    Backend backend(command.dataPath());
+    if (!backend.error().isEmpty())
+        return fail(backend.error());
+    const Task *task = taskArgument(command, backend);
+    if (!task)
+        return 1;
+    const QString next = command.parser.value("next");
+    if (!next.isEmpty() && !QDate::fromString(next, Qt::ISODate).isValid())
+        return fail("--next takes a date like 2026-05-01.");
+    const int id = task->id;
+    backend.skip(id, command.parser.value("reason"), next);
+    if (!backend.error().isEmpty())
+        return fail(backend.error());
+    if (command.wantsJson())
+        printJson(taskJson(backend.task(id)));
+    else
+        print(stdout, "Skipped " + taskLine(backend.task(id)));
+    return 0;
+}
+
 int snooze(const QStringList &arguments) {
     Command command("snooze", "Hide a task for some days.");
     command.parser.addPositionalArgument("task", "The task's number", "<task>");
@@ -327,7 +354,8 @@ int history(const QStringList &arguments) {
                                                             c["followUpDueText"].toString();
             print(stdout, QString("%1  note: %2%3%4").arg(c["date"].toString(), c["text"].toString(), where, followUp));
         } else {
-            print(stdout, QString("%1  %2%3%4").arg(c["date"].toString(), c["title"].toString(), where,
+            print(stdout, QString("%1  %2%3%4%5").arg(c["date"].toString(), c["skipped"].toBool() ? "skipped: " : "",
+                                                     c["title"].toString(), where,
                                                    c["note"].toString().isEmpty() ? "" : "\n      " + c["note"].toString()));
         }
     }
@@ -1176,6 +1204,7 @@ QString cliSummary() {
            "  list [--view V] [--context C]    Tasks, most needful first\n"
            "  add <title> [--every 1w] ...     Add a task\n"
            "  done <task> [--note N]           Mark a task done\n"
+           "  skip <task> [--reason R]         Skip this time without doing it\n"
            "  snooze <task> <days>             Hide a task for some days\n"
            "  today <task>                     Pull a task into today, or put it back\n"
            "  log <text> [--follow-up]         Note something on a context\n"
@@ -1207,7 +1236,7 @@ QString cliSummary() {
 }
 
 bool isCliCommand(const QString &word) {
-    return QStringList{"list", "add", "done", "snooze", "today", "log", "history", "contexts", "skill", "serve", "sync", "universe",
+    return QStringList{"list", "add", "done", "skip", "snooze", "today", "log", "history", "contexts", "skill", "serve", "sync", "universe",
                        "help", "--help", "-h", "--version", "-v"}
         .contains(word);
 }
@@ -1221,6 +1250,7 @@ int runCli(const QStringList &arguments) {
     return command == "list"       ? list(arguments)
            : command == "add"      ? add(arguments)
            : command == "done"     ? done(arguments)
+           : command == "skip"     ? skip(arguments)
            : command == "snooze"   ? snooze(arguments)
            : command == "today"    ? today(arguments)
            : command == "log"      ? logNote(arguments)

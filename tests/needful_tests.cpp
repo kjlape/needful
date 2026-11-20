@@ -155,6 +155,83 @@ private slots:
         QCOMPARE(store.state(*store.task(onceId), saturday), Store::Archived);
     }
 
+    void skippingMovesOnWithoutDoing()
+    {
+        Store store;
+        // Skipped early: the time after the one due, a week after it was due.
+        const int mow = store.addTask(weekly("Mow", 3, saturday), saturday);
+        store.complete(mow, QDateTime(saturday.addDays(-7), QTime(9, 0)), "Edged");
+        QVERIFY(store.skip(mow, QDateTime(saturday.addDays(-2), QTime(9, 0)), "  Rained all weekend "));
+        QCOMPARE(store.task(mow)->due, saturday.addDays(7));
+        QCOMPARE(store.history(mow).size(), 2);
+        QVERIFY(store.history(mow).first().skipped);
+        QCOMPARE(store.history(mow).first().note, QString("Rained all weekend"));
+        // Skipping isn't doing: the last time done is still the mow.
+        QCOMPARE(store.lastDone(mow)->note, QString("Edged"));
+        QVERIFY(store.lastDone(mow, true)->skipped);
+        // Skipped late: a week from the day it was skipped.
+        QVERIFY(store.skip(mow, QDateTime(saturday.addDays(10), QTime(9, 0)), {}));
+        QCOMPARE(store.task(mow)->due, saturday.addDays(17));
+
+        // A fixed rhythm passes over the date due, and keeps its rhythm.
+        Task rent = weekly("Rent", 4, QDate(2026, 7, 1));
+        rent.schedule.unit = "month";
+        rent.schedule.fromDone = false;
+        const int rentId = store.addTask(rent, saturday);
+        store.task(rentId)->snoozedUntil = QDate(2026, 7, 5);
+        store.task(rentId)->today = QDate(2026, 6, 20);
+        store.skip(rentId, QDateTime(QDate(2026, 6, 20), QTime(9, 0)), "Paid a year ahead");
+        QCOMPARE(store.task(rentId)->due, QDate(2026, 8, 1));
+        QVERIFY(!store.task(rentId)->snoozedUntil.isValid());
+        QVERIFY(!store.task(rentId)->today.isValid());
+        store.skip(rentId, QDateTime(QDate(2026, 9, 9), QTime(9, 0)), {});
+        QCOMPARE(store.task(rentId)->due, QDate(2026, 10, 1));
+
+        // Asking tasks take the next date, or retire; once tasks retire.
+        Task ask = weekly("Wax the car", 2, saturday);
+        ask.schedule.kind = Schedule::Ask;
+        const int askId = store.addTask(ask, saturday);
+        store.skip(askId, QDateTime(saturday, QTime(10, 0)), {}, QDate(2026, 10, 1));
+        QCOMPARE(store.task(askId)->due, QDate(2026, 10, 1));
+        QVERIFY(!store.task(askId)->archived);
+        Task once = weekly("Fix the gate", 2, saturday);
+        once.schedule.kind = Schedule::Once;
+        const int onceId = store.addTask(once, saturday);
+        store.skip(onceId, QDateTime(saturday, QTime(10, 0)), "Moved out");
+        QVERIFY(store.task(onceId)->archived);
+        QVERIFY(!store.skip(999, QDateTime(saturday, QTime(10, 0)), {}));
+
+        // A skip survives saving, and plain completions stay as they were.
+        Store loaded;
+        QVERIFY(loaded.fromJson(store.toJson()));
+        QCOMPARE(loaded.toJson(), store.toJson());
+        QVERIFY(loaded.history(mow).first().skipped);
+        QVERIFY(!loaded.history(mow).last().skipped);
+        QVERIFY(!store.toJson().contains("\"skipped\": false"));
+    }
+
+    void backendSkipsWithUndo()
+    {
+        QTemporaryDir dir;
+        Backend backend(dir.filePath("needful.json"));
+        backend.setToday(saturday);
+        const int mow = backend.saveTask({{"title", "Mow"}, {"scheduleKind", "every"}, {"unit", "week"},
+                                          {"due", saturday.toString(Qt::ISODate)}});
+        QCOMPARE(backend.task(mow)["skipText"].toString(),
+                 QString("It comes back %1.").arg(QLocale().toString(saturday.addDays(7), QLocale::LongFormat)));
+        backend.skip(mow, "Rained");
+        QCOMPARE(backend.store().task(mow)->due, saturday.addDays(7));
+        QCOMPARE(backend.task(mow)["lastDone"].toString(), QString("Never done"));
+        const QVariantList history = backend.task(mow)["history"].toList();
+        QCOMPARE(history.size(), 1);
+        QVERIFY(history.first().toMap()["skipped"].toBool());
+        QCOMPARE(history.first().toMap()["note"].toString(), QString("Rained"));
+        QCOMPARE(backend.doneToday().size(), 1);
+        backend.undo();
+        QCOMPARE(backend.store().task(mow)->due, saturday);
+        QVERIFY(backend.store().completions.isEmpty());
+    }
+
     void contextsNestAndFilter()
     {
         Store store;
@@ -514,7 +591,7 @@ private slots:
             Backend a(aData);
             a.setToday(saturday);
             home = a.addContext("Home", 0);
-            for (const QString title : {"Mow", "Gutters", "Filter", "Rake", "Sweep", "Dust"})
+            for (const QString title : {"Mow", "Gutters", "Filter", "Rake", "Sweep", "Dust", "Weed"})
                 a.saveTask({{"title", title}, {"contexts", QVariantList{home}}, {"scheduleKind", "every"}, {"unit", "week"},
                             {"due", saturday.toString(Qt::ISODate)}});
             a.complete(taskNamed(a.store(), "Rake"), "Last fall");
@@ -546,6 +623,10 @@ private slots:
         // Done the same day: one completion, both notes.
         a.complete(gutters, "Left side");
         b.complete(gutters, "Right side");
+        // Done on one and skipped on the other the same day: both stay.
+        const int weed = taskNamed(sa, "Weed");
+        a.complete(weed, "Front beds");
+        b.skip(weed, "Back beds can wait");
         // Deleted on one, edited on the other: it stays deleted, history too.
         a.removeTask(rake);
         edit(b, rake, {{"notes", "Use the big rake"}});
@@ -580,6 +661,8 @@ private slots:
         QCOMPARE(s.task(mow)->priority, 4);
         QCOMPARE(s.task(mow)->notes, QString("Bag the clippings"));
         QCOMPARE(s.history(gutters).size(), 1);
+        QCOMPARE(s.history(weed).size(), 2);
+        QCOMPARE(s.lastDone(weed)->note, QString("Front beds"));
         QStringList both = s.history(gutters).first().note.split('\n'); // In the order they were done.
         both.sort();
         QCOMPARE(both, (QStringList{"Left side", "Right side"}));

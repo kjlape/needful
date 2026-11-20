@@ -99,6 +99,7 @@ main {
 .mark.p3 { border-color: var(--accent); }
 .mark.p4 { border-color: #ff5c5c; }
 .mark.done { border: 0; background: var(--raised); color: var(--accent-text); display: grid; place-items: center; font-size: 13px; font-weight: 700; }
+.mark.done.skipped { color: var(--dim); }
 .mark.log { border: 0; border-radius: 6px; background: var(--raised); color: var(--soft); display: grid; place-items: center; font-size: 12px; }
 .row-body { flex: 1; min-width: 0; }
 .row-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

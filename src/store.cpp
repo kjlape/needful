@@ -98,13 +98,18 @@ QByteArray Store::toJson() const {
             {"created", dateText(t.created)},
         });
     }
-    for (const auto &c : completions)
-        completionArray.append(QJsonObject{{"id", c.id},
-                                           {"task", c.task},
-                                           {"title", c.title},
-                                           {"context", c.context},
-                                           {"at", c.at.toString(Qt::ISODateWithMs)},
-                                           {"note", c.note}});
+    for (const auto &c : completions) {
+        QJsonObject done{{"id", c.id},
+                         {"task", c.task},
+                         {"title", c.title},
+                         {"context", c.context},
+                         {"at", c.at.toString(Qt::ISODateWithMs)},
+                         {"note", c.note}};
+        // Only on skips, so the many completions from before skipping stay as they were.
+        if (c.skipped)
+            done["skipped"] = true;
+        completionArray.append(done);
+    }
     for (const auto &e : log)
         logArray.append(QJsonObject{{"id", e.id},
                                     {"context", e.context},
@@ -196,7 +201,7 @@ bool Store::fromJson(const QByteArray &json, QString *error) {
         loaded.completions.append({o.value("id").toInt(), o.value("task").toInt(), o.value("title").toString(),
                                    o.value("context").toInt(),
                                    QDateTime::fromString(o.value("at").toString(), Qt::ISODate),
-                                   o.value("note").toString()});
+                                   o.value("note").toString(), o.value("skipped").toBool()});
     }
     for (const auto &value : root.value("log").toArray()) {
         const QJsonObject o = value.toObject();
@@ -305,10 +310,10 @@ QList<Completion> Store::history(int taskId) const {
     return found;
 }
 
-const Completion *Store::lastDone(int taskId) const {
+const Completion *Store::lastDone(int taskId, bool skips) const {
     const Completion *latest = nullptr;
     for (const auto &c : completions)
-        if (c.task == taskId && (!latest || c.at > latest->at))
+        if (c.task == taskId && (skips || !c.skipped) && (!latest || c.at > latest->at))
             latest = &c;
     return latest;
 }
@@ -371,6 +376,16 @@ QDate Store::nextDue(const Task &task, const QDate &done) const {
     for (int i = 0; next <= done && i < 100000; ++i)
         next = step(next, s.every, s.unit);
     return next;
+}
+
+// The time skipped is the one due, or today's if it's already late: a weekly
+// mow skipped early comes back a week after it was due, and one skipped late
+// a week from now.
+QDate Store::afterSkip(const Task &task, const QDate &today) const {
+    if (task.schedule.kind != Schedule::Every)
+        return {};
+    const QDate from = task.due.isValid() ? std::max(task.due, today) : today;
+    return task.schedule.fromDone ? step(from, task.schedule.every, task.schedule.unit) : nextDue(task, from);
 }
 
 int Store::addTask(Task task, const QDate &today) {
@@ -485,6 +500,28 @@ bool Store::complete(int id, const QDateTime &at, const QString &note, const QDa
         break;
     case Schedule::Every:
         t->due = nextDue(*t, at.date());
+        break;
+    }
+    return true;
+}
+
+bool Store::skip(int id, const QDateTime &at, const QString &reason, const QDate &askedNext) {
+    Task *t = task(id);
+    if (!t)
+        return false;
+    completions.append({nextId("completions"), t->id, t->title, t->context, at, reason.trimmed(), true});
+    t->snoozedUntil = {};
+    t->today = {};
+    switch (t->schedule.kind) {
+    case Schedule::Once:
+        t->archived = true;
+        break;
+    case Schedule::Ask:
+        t->archived = !askedNext.isValid();
+        t->due = askedNext;
+        break;
+    case Schedule::Every:
+        t->due = afterSkip(*t, at.date());
         break;
     }
     return true;
