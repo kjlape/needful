@@ -751,10 +751,33 @@ int syncJoin(const QString &usual, const QString &pairCode, const QString &at, b
 int syncLinkCommand(const QString &usual) {
     PeerLink link(usual);
     QString error;
-    if (!link.start(&error))
-        return fail(error.isEmpty() ? QString("Another Needful here already keeps the link.") : error);
-    print(stdout, QString("Keeping \"%1\" in step with its paired computers until stopped.").arg(link.name()));
-    fflush(stdout);
+    const bool started = link.start(&error);
+    if (!started && !error.isEmpty())
+        return fail(error);
+    auto keeping = [&link] {
+        print(stdout, QString("Keeping \"%1\" in step with its paired computers until stopped.").arg(link.name()));
+        fflush(stdout);
+    };
+    // While the window or the phone page's service holds the link, wait and
+    // take it over when that stops, rather than exiting and being restarted.
+    QTimer standby;
+    if (started) {
+        keeping();
+    } else {
+        print(stdout, "Another Needful here keeps the link for now; taking over when it stops.");
+        fflush(stdout);
+        QObject::connect(&standby, &QTimer::timeout, &standby, [&] {
+            QString problem;
+            if (link.start(&problem)) {
+                standby.stop();
+                keeping();
+            } else if (!problem.isEmpty()) {
+                print(stderr, problem);
+                QCoreApplication::exit(1);
+            }
+        });
+        standby.start(5000);
+    }
     stopOnSignals();
     return QCoreApplication::exec();
 }
