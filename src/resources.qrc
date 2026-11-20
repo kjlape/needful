@@ -13,6 +13,7 @@
         <file alias="ContextDialog.qml">ContextDialog.qml</file>
         <file alias="DateStepper.qml">DateStepper.qml</file>
         <file alias="HelpOverlay.qml">HelpOverlay.qml</file>
+        <file alias="PairDialog.qml">PairDialog.qml</file>
         <file alias="skill.md">skill.md</file>
         <file alias="i18n/en.json">i18n/en.json</file>
     </qresource>

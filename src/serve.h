@@ -62,4 +62,13 @@ void unloadLaunchAgent(const QString &file);
 QList<QStringList> rsyncCommands(const RsyncSetup &setup);
 extern const QString RsyncService, RsyncTimer;
 
+// needful sync install: keeps the link to your paired computers up, on a
+// machine where neither the window nor the phone page's service usually
+// runs. data is empty for the usual data file.
+QMap<QString, QByteArray> linkUnits(const QString &needful, const QString &data);
+extern const QString LinkService;
+
 int runServe(const QStringList &arguments);
+// SIGTERM and Ctrl+C end the event loop, so a long-running command shuts
+// down cleanly.
+void stopOnSignals();

@@ -9,6 +9,10 @@ DEFINES += APP_VERSION=\\\"$$VERSION\\\"
 HEADERS += \
     src/backend.h \
     src/cli.h \
+    src/devices.h \
+    src/link.h \
+    src/peerpanel.h \
+    src/peers.h \
     src/httpserver.h \
     src/serve.h \
     src/store.h \
@@ -22,6 +26,9 @@ SOURCES += \
     src/main.cpp \
     src/backend.cpp \
     src/cli.cpp \
+    src/devices.cpp \
+    src/peerpanel.cpp \
+    src/peers.cpp \
     src/httpserver.cpp \
     src/serve.cpp \
     src/store.cpp \
@@ -32,3 +39,5 @@ SOURCES += \
     src/webapi.cpp
 
 RESOURCES += src/resources.qrc src/web/web.qrc
+
+include(link/link.pri)

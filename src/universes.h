@@ -2,6 +2,7 @@
 
 #include <QList>
 #include <QString>
+#include <QStringList>
 
 // Universes: separate lists on one computer, such as your own, a partner's,
 // and the house's. Each is its own data file, which can sync through its own
@@ -35,11 +36,14 @@ public:
 
     // Adds a name, with a data file of its own. Returns that file's path.
     QString add(const QString &name, QString *error);
-    // Forgets the name on this computer; the data file stays.
+    // Forgets the name on this computer; the data file stays. A list your
+    // paired computers share stays off this one, rather than coming back.
     bool remove(const QString &name, QString *error);
+    // The ids of shared lists removed here.
+    QStringList hidden() const;
 
 private:
-    bool save(const QList<Universe> &others, QString *error) const;
+    bool save(const QList<Universe> &others, QString *error, const QStringList &hidden) const;
     QList<Universe> others() const;
 
     QString m_usual;

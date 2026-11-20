@@ -192,7 +192,7 @@ bool SyncFolder::read(Store *store, QString *error) {
         absorb(record.value("clock").toString());
         const bool own = file.key() == m_machine;
         if (own)
-            for (const QString key : {"name", "changed", "clock", "forgotten"})
+            for (const QString key : {"name", "changed", "clock", "forgotten", "list", "saved", "device"})
                 if (record.contains(key))
                     m_meta[key] = record.value(key);
         for (const QString &list : Lists) {
@@ -443,6 +443,11 @@ bool SyncFolder::saveOwn(const Records &records, const QJsonObject &meta, QStrin
     QJsonObject root = meta;
     root["needfulSync"] = RecordVersion;
     root["machine"] = m_machine;
+    // Only this machine writes its file, so a count of saves orders its
+    // copies wherever they travel.
+    root["saved"] = qint64(m_meta.value("saved").toInteger()) + 1;
+    if (const QString list = listId(); !list.isEmpty() && !root.contains("list"))
+        root["list"] = list;
     if (!root.contains("name"))
         root["name"] = defaultName();
     for (const QString &list : Lists) {
@@ -456,8 +461,54 @@ bool SyncFolder::saveOwn(const Records &records, const QJsonObject &meta, QStrin
         return false;
     m_own = records;
     m_meta = meta;
+    m_meta["saved"] = root["saved"];
+    if (root.contains("list"))
+        m_meta["list"] = root["list"];
     m_files[m_machine] = root;
     return true;
+}
+
+// The lowest id any machine gives it, so two machines that each made one
+// up before hearing of the other end up agreeing.
+QString SyncFolder::listId() const {
+    QString lowest;
+    for (const auto &file : m_files) {
+        const QString id = file.value("list").toString();
+        if (!id.isEmpty() && (lowest.isEmpty() || id < lowest))
+            lowest = id;
+    }
+    const QString own = m_meta.value("list").toString();
+    if (!own.isEmpty() && (lowest.isEmpty() || own < lowest))
+        lowest = own;
+    return lowest;
+}
+
+bool SyncFolder::ensureListId(QString *error) {
+    QJsonObject meta = m_meta;
+    const QString id = listId().isEmpty() ? newRecordId() : listId();
+    if (meta.value("list").toString() == id && m_files.contains(m_machine))
+        return true;
+    meta["list"] = id;
+    return saveOwn(m_own, meta, error);
+}
+
+bool SyncFolder::setDevice(const QString &device, QString *error) {
+    if (m_meta.value("device").toString() == device && m_files.contains(m_machine))
+        return true;
+    QJsonObject meta = m_meta;
+    meta["device"] = device;
+    return saveOwn(m_own, meta, error);
+}
+
+SyncFolder::File SyncFolder::describe(const QJsonObject &file) {
+    return {qint64(file.value("saved").toInteger()), file.value("clock").toString(), file.value("device").toString()};
+}
+
+QHash<QString, SyncFolder::File> SyncFolder::files() const {
+    QHash<QString, File> found;
+    for (auto it = m_files.cbegin(); it != m_files.cend(); ++it)
+        found[it.key()] = describe(it.value());
+    return found;
 }
 
 QString SyncFolder::name() const {
@@ -638,7 +689,7 @@ Store SyncFolder::combine(const Store &folder, const Store &local, Setup *counts
 }
 
 bool SyncFolder::setup(const QString &dataPath, const QString &folder, const QString &name, const QDateTime &now,
-                       Setup *result, QString *error, const QString &defaultDataPath) {
+                       Setup *result, QString *error, const QString &defaultDataPath, const QString &listId) {
     const QString absolute = QDir::cleanPath(QFileInfo(folder).absoluteFilePath());
     QByteArray contents;
     if (QFile file(dataPath); file.open(QIODevice::ReadOnly))
@@ -710,6 +761,7 @@ bool SyncFolder::setup(const QString &dataPath, const QString &folder, const QSt
         chosen = QString("%1-%2").arg(base).arg(n);
     sync.m_meta["name"] = chosen;
     sync.m_meta["changed"] = now.toUTC().toString(Qt::ISODateWithMs); // Setting up counts as being heard from.
+    sync.m_meta["list"] = !listId.isEmpty() ? listId : !sync.listId().isEmpty() ? sync.listId() : newRecordId();
     result->name = chosen;
     result->joined = !result->others.isEmpty();
 

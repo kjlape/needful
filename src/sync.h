@@ -79,6 +79,27 @@ public:
 
     // As of the last read, sorted by name.
     QList<Machine> machines() const;
+
+    // Which list this folder holds, the same on every machine that shares
+    // it, so paired computers can tell their lists apart without a folder in
+    // common. Empty for a folder set up before lists had ids, until
+    // ensureListId gives it one.
+    QString listId() const;
+    bool ensureListId(QString *error);
+    // The paired device (its key) that writes this machine's file, so a
+    // computer's changes can be told apart from its folder machines.
+    bool setDevice(const QString &device, QString *error);
+    // Each machine's file, by machine id: how new it is, for passing files
+    // between computers (a higher one is newer), and which device wrote it.
+    struct File {
+        qint64 saved = 0;
+        QString clock, device;
+        bool newerThan(const File &other) const {
+            return saved != other.saved ? saved > other.saved : clock > other.clock;
+        }
+    };
+    QHash<QString, File> files() const;
+    static File describe(const QJsonObject &machineFile);
     QString name() const;
     bool rename(const QString &name, QString *error);
     bool forget(const QString &machineId, QString *error);
@@ -95,8 +116,10 @@ public:
     };
     // Refuses a data file that a sync tool shares, or that sits inside the
     // folder; defaultDataPath is where the message suggests keeping it.
+    // listId adopts a list another computer already has, for a folder its
+    // files haven't reached yet.
     static bool setup(const QString &dataPath, const QString &folder, const QString &name, const QDateTime &now,
-                      Setup *result, QString *error, const QString &defaultDataPath = {});
+                      Setup *result, QString *error, const QString &defaultDataPath = {}, const QString &listId = {});
     // Adds to `folder` what only `local` has; counts what it added.
     static Store combine(const Store &folder, const Store &local, Setup *counts);
 

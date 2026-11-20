@@ -29,7 +29,7 @@ ApplicationWindow {
     // Single-key shortcuts stand down while a dialog is open.
     readonly property bool dialogOpen: helpVisible || editor.visible || completeDialog.visible
                                        || snoozeDialog.visible || contextDialog.visible || confirm.visible
-                                       || logDialog.visible
+                                       || logDialog.visible || pairDialog.visible
 
     readonly property var views: [
         { key: "today", label: qsTr("Today") },
@@ -159,6 +159,11 @@ ApplicationWindow {
                 views: win.views
                 onAddContext: parent => contextDialog.openForNew(parent)
                 onRenameContext: c => contextDialog.openForRename(c)
+                onPairComputer: pairDialog.openPair()
+                onJoinComputer: pairDialog.openJoin()
+                onUnpairComputer: d => confirm.ask(
+                    qsTr("Unpair “%1”? It can no longer connect. Its changes stay.").arg(d.name),
+                    qsTr("Unpair"), () => peers.unpair(d.id))
                 onRemoveContext: c => confirm.ask(
                     qsTr("Delete the context “%1”? Its tasks and history move up to its parent.").arg(c.name),
                     qsTr("Delete"), () => backend.removeContext(c.id))
@@ -384,6 +389,7 @@ ApplicationWindow {
     TaskEditor { id: editor }
     CompleteDialog { id: completeDialog }
     LogDialog { id: logDialog }
+    PairDialog { id: pairDialog }
     SnoozeDialog { id: snoozeDialog }
     ContextDialog { id: contextDialog }
 

@@ -81,16 +81,83 @@ whatever another process saved, never over it.
 
 ## On your other computers
 
-Point Needful at a folder that a sync tool you already use (Syncthing,
+Pair your computers once, by a code, and they keep each other in step with
+nothing in between: no account, no sync tool, no outside server.
+
+```sh
+needful sync pair                            # on the desktop: shows a code
+needful sync join 7-violet-crumble-tango     # on the laptop: joins its list
+```
+
+```
+$ needful sync pair
+Pair code: 7-violet-crumble-tango
+This machine: "desktop"  4F2A-91C0-7B3E
+Waiting for a computer… (the code works once, for a few minutes)
+                                          $ needful sync join 7-violet-crumble-tango
+                                          Pair with "desktop"  4F2A-91C0-7B3E? [y/N] y
+Paired with "laptop"  C81D-0A47-E2F9      Paired with "desktop".
+                                          Joined its list. Merged 3 tasks that were only here.
+                                          This machine is "laptop".
+```
+
+Both show the same fingerprint, so you can check you paired with your own
+machine. A code that's mistyped, used twice, or more than five minutes old
+pairs nothing. The window has the same steps in the sidebar's ⋯ menu: Pair a
+computer, Join a computer, and Unpair.
+
+Joining takes in the other computer's list and merges in what only this one
+had, so nothing is doubled. Universes come along too: every universe on one
+of your computers shows up on the others (`universe remove` hides one on just
+that computer). Pairing a computer with any one of yours trusts it on all of
+them, and unpairing it on one unpairs it everywhere.
+
+On the same network, paired computers find each other with nothing to set
+up. Away from home, they connect whenever one can reach the other: at the
+address it was last seen at, or one you give it. Needful listens on port
+7787 (UDP, and TCP for pairing with `--at`).
+
+```sh
+needful sync status                          # who's connected, and each one's last change
+needful sync join <code> --at desktop.example.net   # pair across networks
+needful sync reach desktop desktop.example.net      # look for it there too
+needful sync relay https://relay.example.net        # meet through an iroh-relay you run
+needful sync unpair old-mac                  # it can no longer connect; its changes stay
+needful sync rename laptop
+needful sync install                         # keep the link up as a user service
+```
+
+```
+$ needful sync status
+This     laptop  C81D-0A47-E2F9
+desktop  connected on this network · last change 4 minutes ago
+nas      connected directly · last change just now
+old-mac  not reachable since Tuesday · last change 2026-10-02
+```
+
+Changes pass between paired computers whenever two of them are awake: while
+the window is open, while `needful serve` runs, or all the time with `sync
+install` (needful-link.service). Each passes along everything it has, so an
+always-on computer carries the laptop's changes to the desktop even if those
+two are never on at once. A relay is only used if you add one; it passes
+along traffic it can't read, and every paired computer learns of it. The
+link is encrypted end to end, and each computer only talks to computers it
+has paired with.
+
+### Through a sync folder
+
+Or point Needful at a folder that a sync tool you already use (Syncthing,
 Dropbox, iCloud Drive, Nextcloud) keeps in step, once on each computer:
 
 ```sh
 needful sync setup ~/Sync/needful    # the first moves its data in
 needful sync setup ~/Sync/needful    # the others join, merging in what only they had
 needful sync status                  # when each machine's changes were last seen
-needful sync rename laptop
 needful sync forget old-thinkpad     # stop listing a machine you retired; its changes stay
 ```
+
+A computer can sync through a folder, through its paired computers, or
+both, and pairing two computers that already share a folder loses nothing.
 
 No sync tool? Any two computers that can reach each other over SSH can swap
 changes with plain rsync. After `sync setup` on both, run this on one of
@@ -110,14 +177,16 @@ a prompt (`ssh -o BatchMode=yes desktop true`). `--remote-folder` names the
 folder there if it isn't at the same path, and `--every 30s|5m|1h` sets how
 often.
 
+### How the merge works
+
 Every machine keeps working fully, online or not, and the open window takes
-in the other machines' changes as the sync tool brings them. Each machine
-writes only its own file in the folder, so the sync tool never has two
-versions of one file to choose between; every machine merges them all the
-same way. Different changes are all kept; the same field edited on two
-machines goes to the later edit, by when it was made; a task done on both
-the same day is one completion with both notes; a deleted task stays
-deleted. The data file then only says which folder to use, and the single
+in the other machines' changes as they arrive. Each machine writes only its
+own file, so no file ever has two versions to choose between; every machine
+merges them all the same way. Different changes are all kept; the same field
+edited on two machines goes to the later edit, by when it was made; a task
+done on both the same day is one completion with both notes; a deleted task
+stays deleted. The data file then only says which folder to use (for paired
+computers with no sync folder, one Needful keeps beside it), and the single
 file it held is kept beside it as `needful.json.before-sync`. Copy the
 folder to keep a backup.
 
@@ -144,7 +213,8 @@ needful universe remove scratch                  # stops listing it; its data st
 ```
 
 Each universe syncs through its own folder, the same way as your own, and
-this computer joins it as one more machine. There are no permissions inside
+this computer joins it as one more machine. Your paired computers also keep
+every universe in step among themselves. There are no permissions inside
 a universe: anyone who has joined it can change anything in it.
 
 ## On your phone
@@ -193,6 +263,10 @@ bin/build     # build/needful
 bin/test      # the tests, offscreen
 bin/install   # an Arch package, so it shows up in the app launcher
 ```
+
+Building needs Rust's `cargo` as well as Qt: the link between paired
+computers (`link/`) is a small Rust library on [iroh](https://iroh.computer),
+with iroh's public relays and address lookup turned off.
 
 Needful is C++ and Qt Quick with no platform-specific dependencies: no D-Bus,
 no portals, and the Omarchy theme and language are followed when present and

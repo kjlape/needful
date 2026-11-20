@@ -9,6 +9,8 @@
 #include <QProcess>
 #include <QStandardPaths>
 #include <QTcpSocket>
+#include <QSignalSpy>
+#include <QRegularExpression>
 
 #include "backend.h"
 #include "httpserver.h"
@@ -19,6 +21,8 @@
 #include "translator.h"
 #include "universes.h"
 #include "cli.h"
+#include "devices.h"
+#include "peers.h"
 #include "webapi.h"
 
 namespace {
@@ -1206,6 +1210,387 @@ private slots:
         QCOMPARE(removed, 0);
         QVERIFY(hersGone);
         QVERIFY(QFile::exists(unit));
+    }
+
+    void devicesMergeLatestAndSpreadUnpairing()
+    {
+        QTemporaryDir dir;
+        QDir().mkpath(dir.filePath("a"));
+        QDir().mkpath(dir.filePath("b"));
+        Devices a(dir.filePath("a")), b(dir.filePath("b"));
+        QVERIFY(a.load());
+        QVERIFY(b.load());
+        QCOMPARE(a.id().size(), 64);
+        QVERIFY(a.id() != b.id());
+        QVERIFY(QRegularExpression("^[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$").match(a.fingerprint()).hasMatch());
+        // The identity stays the same from one start to the next, and only
+        // its owner can read the secret.
+        Devices again(dir.filePath("a"));
+        QVERIFY(again.load());
+        QCOMPARE(again.id(), a.id());
+        QCOMPARE(QFile::permissions(dir.filePath("a/identity.key")) & (QFileDevice::ReadGroup | QFileDevice::ReadOther),
+                 QFileDevice::Permissions());
+
+        const QString nas(64, 'c');
+        const QDateTime t(saturday, QTime(9, 0));
+        a.pair(nas, "nas", "computer", t);
+        QVERIFY(b.merge(a.toJson()));
+        QVERIFY(b.trustedIds().contains(nas));
+        QVERIFY(!b.merge(a.toJson())); // Nothing new the second time.
+        b.unpair(nas, t.addSecs(60));
+        b.setRelay("https://relay.example.net", t.addSecs(60));
+        QVERIFY(a.merge(b.toJson()));
+        QVERIFY(!a.trustedIds().contains(nas));
+        QCOMPARE(a.relay(), QString("https://relay.example.net"));
+        // An older pairing that arrives late doesn't undo the unpairing...
+        Devices stale(dir.filePath("a"));
+        QVERIFY(stale.load());
+        stale.pair(nas, "nas", "computer", t.addSecs(30));
+        a.merge(stale.toJson());
+        QVERIFY(!a.trustedIds().contains(nas));
+        // ...but pairing it again later does.
+        a.pair(nas, "nas", "computer", t.addSecs(120));
+        QVERIFY(a.trustedIds().contains(nas));
+        QVERIFY(a.find("NAS"));
+        QVERIFY(a.find(Devices::fingerprintOf(nas).left(9)));
+        QVERIFY(!a.find("nope"));
+    }
+
+    void syncListsHaveIdsAndFilesHaveVersions()
+    {
+        QTemporaryDir dir;
+        const QString desktopData = dir.filePath("desktop/needful.json"), laptopData = dir.filePath("laptop/needful.json");
+        const QString folder = dir.filePath("sync");
+        {
+            Backend desktop(desktopData);
+            desktop.saveTask({{"title", "Mow"}});
+        }
+        SyncFolder::Setup result;
+        QString error;
+        QVERIFY2(SyncFolder::setup(desktopData, folder, "desktop", QDateTime::currentDateTime(), &result, &error), qPrintable(error));
+        SyncFolder::Pointer pointer;
+        QVERIFY(SyncFolder::readPointer(contentsOf(desktopData), &pointer));
+        SyncFolder desktop(folder, pointer.machine);
+        Store store;
+        QVERIFY(desktop.read(&store, &error));
+        const QString list = desktop.listId();
+        QVERIFY(!list.isEmpty());
+        const qint64 saved = desktop.files().value(pointer.machine).saved;
+        QVERIFY(saved > 0);
+        QVERIFY(desktop.rename("big desktop", &error));
+        QVERIFY(desktop.files().value(pointer.machine).newerThan(SyncFolder::File{saved, {}, {}}));
+        QVERIFY(desktop.setDevice(QString(64, 'a'), &error));
+        QCOMPARE(desktop.files().value(pointer.machine).device, QString(64, 'a'));
+
+        // Joining takes on the list's id.
+        QVERIFY(SyncFolder::setup(laptopData, folder, "laptop", QDateTime::currentDateTime(), &result, &error));
+        QVERIFY(SyncFolder::readPointer(contentsOf(laptopData), &pointer));
+        SyncFolder laptop(folder, pointer.machine);
+        QVERIFY(laptop.read(&store, &error));
+        QCOMPARE(laptop.listId(), list);
+
+        // A list another computer has can be set up before its files arrive.
+        const QString hers = dir.filePath("hers.json");
+        QVERIFY(SyncFolder::setup(hers, dir.filePath("hers-sync"), "laptop", QDateTime::currentDateTime(), &result,
+                                  &error, hers, "0123456789abcdef"));
+        QVERIFY(SyncFolder::readPointer(contentsOf(hers), &pointer));
+        SyncFolder adopted(dir.filePath("hers-sync"), pointer.machine);
+        QVERIFY(adopted.read(&store, &error));
+        QCOMPARE(adopted.listId(), QString("0123456789abcdef"));
+    }
+
+    // Two computers, each with its own data folder, on this one: pair by
+    // code, join, swap changes, carry universes, and unpair.
+    void peerSyncPairsJoinsAndKeepsInStep()
+    {
+        QTemporaryDir dir;
+        const QString desktopData = dir.filePath("desktop/needful.json"), laptopData = dir.filePath("laptop/needful.json");
+        {
+            Backend desktop(desktopData);
+            desktop.saveTask({{"title", "Mow"}});
+            desktop.saveTask({{"title", "Oil change"}});
+            Backend laptop(laptopData);
+            laptop.saveTask({{"title", "Mow"}});
+            laptop.saveTask({{"title", "Water the plants"}});
+        }
+        QString error;
+        const QString house = Universes(laptopData).add("house", &error);
+        {
+            Backend b(house);
+            b.saveTask({{"title", "Clean the gutters"}});
+        }
+
+        PeerLink::Options options;
+        options.port = 0;
+        options.mdns = false;
+        options.loopback = true;
+        options.ipc = false;
+        PeerLink desktop(desktopData, options), laptop(laptopData, options);
+        QVERIFY2(desktop.start(&error), qPrintable(error));
+        QVERIFY2(laptop.start(&error), qPrintable(error));
+        // A computer that has never paired keeps its single file.
+        QVERIFY(!SyncFolder::readPointer(contentsOf(laptopData), nullptr));
+
+        QSignalSpy code(&desktop, &PeerLink::pairCode), paired(&desktop, &PeerLink::paired);
+        QSignalSpy confirm(&laptop, &PeerLink::confirm), joined(&laptop, &PeerLink::joined);
+        QSignalSpy desktopFailed(&desktop, &PeerLink::failed), laptopFailed(&laptop, &PeerLink::failed);
+        desktop.pair();
+        QCOMPARE(code.size(), 1);
+        const QString pairCode = code.first().at(0).toString();
+        QVERIFY(QRegularExpression("^\\d{1,2}(-[a-z]+){3}$").match(pairCode).hasMatch());
+        QCOMPARE(code.first().at(2).toString(), Devices::fingerprintOf(desktop.id()));
+        QTRY_VERIFY(desktop.port() > 0);
+
+        laptop.join(pairCode.toUpper().replace('-', ' '), QString("127.0.0.1:%1").arg(desktop.port()));
+        QTRY_COMPARE_WITH_TIMEOUT(confirm.size(), 1, 15000);
+        // Both show the same fingerprint for the desktop.
+        QCOMPARE(confirm.first().at(1).toString(), Devices::fingerprintOf(desktop.id()));
+        laptop.answer(true);
+        QTRY_COMPARE_WITH_TIMEOUT(joined.size(), 1, 15000);
+        QCOMPARE(paired.size(), 1);
+        QCOMPARE(paired.first().at(1).toString(), Devices::fingerprintOf(laptop.id()));
+        QVERIFY(desktopFailed.isEmpty());
+        QVERIFY(laptopFailed.isEmpty());
+        const QVariantMap result = joined.first().at(0).toMap();
+        QCOMPARE(result["already"].toBool(), false);
+        QCOMPARE(result["tasks"].toInt(), 1); // Mow was in both, so only the plants came over.
+
+        auto titles = [](const QString &data) {
+            QStringList list;
+            const Backend backend(data);
+            for (const Task &t : backend.store().tasks)
+                list.append(t.title);
+            list.sort();
+            return list;
+        };
+        const QStringList all{"Mow", "Oil change", "Water the plants"};
+        QCOMPARE(titles(laptopData), all);
+        QTRY_COMPARE_WITH_TIMEOUT(titles(desktopData), all, 15000);
+        QVERIFY(!laptop.linkTo(desktop.id()).isEmpty());
+        QCOMPARE(desktop.linkTo(laptop.id()), QString("local"));
+
+        // The laptop's universe shows up on the desktop, under its name.
+        QTRY_VERIFY_WITH_TIMEOUT(!Universes(desktopData).dataPath("house").isEmpty(), 15000);
+        const QString desktopHouse = Universes(desktopData).dataPath("house");
+        QTRY_COMPARE_WITH_TIMEOUT(titles(desktopHouse), QStringList{"Clean the gutters"}, 15000);
+
+        // A change on one shows up on the other, with no command run.
+        {
+            Backend b(laptopData);
+            b.saveTask({{"title", "Replace the air filter"}});
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(titles(desktopData).contains("Replace the air filter"), 15000);
+        {
+            Backend b(desktopHouse);
+            b.saveTask({{"title", "Sweep the porch"}});
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(titles(house).contains("Sweep the porch"), 15000);
+
+        // Status, as the command line and the window read it.
+        Backend laptopBackend(laptopData);
+        const PeerStatus status = PeerStatus::read(PeerLink::appDirFor(laptopData), laptopBackend.sync());
+        QCOMPARE(status.devices.size(), 1);
+        QCOMPARE(status.devices.first().device.id, desktop.id());
+        QVERIFY(status.devices.first().changed.isValid());
+
+        // Removing a shared universe keeps it off this computer.
+        QVERIFY(Universes(desktopData).remove("house", &error));
+        QVERIFY(!Universes(desktopData).hidden().isEmpty());
+        {
+            Backend b(house);
+            b.saveTask({{"title", "Fix the fence"}});
+        }
+        QTest::qWait(1500);
+        QVERIFY(Universes(desktopData).dataPath("house").isEmpty());
+
+        // Unpairing cuts the link at once, and nothing more comes over.
+        {
+            Devices devices(desktop.appDir());
+            QVERIFY(devices.load());
+            devices.unpair(laptop.id(), QDateTime::currentDateTime());
+            QVERIFY(devices.save());
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(desktop.linkTo(laptop.id()).isEmpty(), 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(laptop.linkTo(desktop.id()).isEmpty(), 15000);
+        {
+            Backend b(laptopData);
+            b.saveTask({{"title", "Wash the car"}});
+        }
+        laptop.dial(desktop.id(), {QString("127.0.0.1:%1").arg(desktop.port())});
+        QTest::qWait(1500);
+        QVERIFY(!titles(desktopData).contains("Wash the car"));
+        QVERIFY(desktop.linkTo(laptop.id()).isEmpty());
+    }
+
+    // Pairing a third computer with any one of yours trusts it on all of
+    // them, and changes find their way through the one in the middle.
+    void peerSyncTrustSpreadsAndChangesTravelOn()
+    {
+        QTemporaryDir dir;
+        PeerLink::Options options;
+        options.port = 0;
+        options.mdns = false;
+        options.loopback = true;
+        options.ipc = false;
+        const QString aData = dir.filePath("a/needful.json"), bData = dir.filePath("b/needful.json"),
+                      cData = dir.filePath("c/needful.json");
+        PeerLink a(aData, options), b(bData, options), c(cData, options);
+        QString error;
+        QVERIFY(a.start(&error) && b.start(&error) && c.start(&error));
+
+        auto pairUp = [](PeerLink &host, PeerLink &guest) {
+            QSignalSpy code(&host, &PeerLink::pairCode), confirm(&guest, &PeerLink::confirm),
+                joined(&guest, &PeerLink::joined);
+            host.pair();
+            QTRY_VERIFY(host.port() > 0);
+            guest.join(code.first().at(0).toString(), QString("127.0.0.1:%1").arg(host.port()));
+            QTRY_COMPARE_WITH_TIMEOUT(confirm.size(), 1, 15000);
+            guest.answer(true);
+            QTRY_COMPARE_WITH_TIMEOUT(joined.size(), 1, 15000);
+        };
+        pairUp(a, b);
+        if (QTest::currentTestFailed())
+            return;
+        pairUp(b, c);
+        if (QTest::currentTestFailed())
+            return;
+        auto trusted = [](const PeerLink &link) {
+            Devices devices(link.appDir());
+            devices.load();
+            return devices.trustedIds();
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(trusted(a).contains(c.id()), 15000);
+        QVERIFY(trusted(c).contains(a.id()));
+
+        // a and c have never talked; b carries c's change to a.
+        {
+            Backend backend(cData);
+            backend.saveTask({{"title", "From c"}});
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(
+            [&] {
+                const Backend backend(aData);
+                for (const Task &t : backend.store().tasks)
+                    if (t.title == "From c")
+                        return true;
+                return false;
+            }(),
+            15000);
+    }
+
+    void peerSyncRefusesAWrongCode()
+    {
+        QTemporaryDir dir;
+        PeerLink::Options options;
+        options.port = 0;
+        options.mdns = false;
+        options.loopback = true;
+        options.ipc = false;
+        PeerLink desktop(dir.filePath("d/needful.json"), options), laptop(dir.filePath("l/needful.json"), options);
+        QString error;
+        QVERIFY(desktop.start(&error) && laptop.start(&error));
+        QSignalSpy code(&desktop, &PeerLink::pairCode), desktopFailed(&desktop, &PeerLink::failed),
+            laptopFailed(&laptop, &PeerLink::failed), confirm(&laptop, &PeerLink::confirm);
+        desktop.pair();
+        QTRY_VERIFY(desktop.port() > 0);
+        laptop.join("99-not-the-code", QString("127.0.0.1:%1").arg(desktop.port()));
+        QTRY_COMPARE_WITH_TIMEOUT(laptopFailed.size(), 1, 15000);
+        QTRY_COMPARE_WITH_TIMEOUT(desktopFailed.size(), 1, 15000);
+        QVERIFY(confirm.isEmpty());
+        QVERIFY(laptopFailed.first().at(0).toString().contains("didn't match"));
+        // The code is spent: the right one no longer works either.
+        laptop.join(code.first().at(0).toString(), QString("127.0.0.1:%1").arg(desktop.port()));
+        QTRY_COMPARE_WITH_TIMEOUT(laptopFailed.size(), 2, 15000);
+        QVERIFY(laptopFailed.last().at(0).toString().contains("isn't waiting"));
+        Devices devices(desktop.appDir());
+        devices.load();
+        QVERIFY(devices.paired().isEmpty());
+    }
+
+    // A list already shared through a sync tool's folder can't be swapped
+    // for another computer's by joining it.
+    void peerSyncWontJoinOverAFolderList()
+    {
+        QTemporaryDir dir;
+        PeerLink::Options options;
+        options.port = 0;
+        options.mdns = false;
+        options.loopback = true;
+        options.ipc = false;
+        const QString laptopData = dir.filePath("l/needful.json");
+        SyncFolder::Setup result;
+        QString error;
+        QVERIFY(SyncFolder::setup(laptopData, dir.filePath("Sync/needful"), "laptop", QDateTime::currentDateTime(),
+                                  &result, &error));
+        PeerLink desktop(dir.filePath("d/needful.json"), options), laptop(laptopData, options);
+        QVERIFY(desktop.start(&error) && laptop.start(&error));
+        QSignalSpy code(&desktop, &PeerLink::pairCode), failed(&laptop, &PeerLink::failed),
+            confirm(&laptop, &PeerLink::confirm);
+        desktop.pair();
+        QTRY_VERIFY(desktop.port() > 0);
+        laptop.join(code.first().at(0).toString(), QString("127.0.0.1:%1").arg(desktop.port()));
+        QTRY_COMPARE_WITH_TIMEOUT(failed.size(), 1, 15000);
+        QVERIFY(failed.first().at(0).toString().contains("syncs through"));
+        QVERIFY(confirm.isEmpty());
+    }
+
+    // Two computers already in step through a sync tool's folder pair, and
+    // nothing is doubled: their lists are already one.
+    void peerSyncTakesOverFromAFolder()
+    {
+        QTemporaryDir dir;
+        const QString desktopData = dir.filePath("d/needful.json"), laptopData = dir.filePath("l/needful.json");
+        const QString desktopFolder = dir.filePath("d-sync"), laptopFolder = dir.filePath("l-sync");
+        {
+            Backend desktop(desktopData);
+            desktop.saveTask({{"title", "Mow"}});
+        }
+        SyncFolder::Setup result;
+        QString error;
+        QVERIFY(SyncFolder::setup(desktopData, desktopFolder, "desktop", QDateTime::currentDateTime(), &result, &error));
+        copyNewer(desktopFolder, laptopFolder);
+        QVERIFY(SyncFolder::setup(laptopData, laptopFolder, "laptop", QDateTime::currentDateTime(), &result, &error));
+        copyNewer(laptopFolder, desktopFolder);
+
+        PeerLink::Options options;
+        options.port = 0;
+        options.mdns = false;
+        options.loopback = true;
+        options.ipc = false;
+        PeerLink desktop(desktopData, options), laptop(laptopData, options);
+        QVERIFY(desktop.start(&error) && laptop.start(&error));
+        QSignalSpy code(&desktop, &PeerLink::pairCode), confirm(&laptop, &PeerLink::confirm),
+            joined(&laptop, &PeerLink::joined), failed(&laptop, &PeerLink::failed);
+        desktop.pair();
+        QTRY_VERIFY(desktop.port() > 0);
+        laptop.join(code.first().at(0).toString(), QString("127.0.0.1:%1").arg(desktop.port()));
+        QTRY_COMPARE_WITH_TIMEOUT(confirm.size(), 1, 15000);
+        laptop.answer(true);
+        QTRY_COMPARE_WITH_TIMEOUT(joined.size(), 1, 15000);
+        QVERIFY(failed.isEmpty());
+        QVERIFY(joined.first().at(0).toMap()["already"].toBool());
+
+        // Now changes pass over the link, with no sync tool running.
+        {
+            Backend b(laptopData);
+            b.saveTask({{"title", "Wash the car"}});
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(
+            [&] {
+                const Backend backend(desktopData);
+                return backend.store().tasks.size() == 2;
+            }(),
+            15000);
+    }
+
+    void linkUnitRunsSyncLink()
+    {
+        const auto units = linkUnits("/usr/bin/needful", {});
+        QVERIFY(units.value(LinkService).contains("ExecStart=/usr/bin/needful sync link\n"));
+        QVERIFY(!units.value(LinkService).contains("Environment="));
+        QVERIFY(linkUnits("/usr/bin/needful", "/home/me/my data.json")
+                    .value(LinkService)
+                    .contains("Environment=\"NEEDFUL_DATA=/home/me/my data.json\"\n"));
     }
 
     void themeFallsBack()

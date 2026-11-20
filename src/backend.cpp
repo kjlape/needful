@@ -1,4 +1,5 @@
 #include "backend.h"
+#include "peers.h"
 #include "universes.h"
 
 #include <QDir>
@@ -80,6 +81,9 @@ void Backend::watch() {
     // brings their files into the folder.
     if (m_sync && !m_sync->watchPaths().isEmpty())
         m_watcher.addPaths(m_sync->watchPaths());
+    // Paired computers connecting and going, for the footer.
+    if (QFileInfo(appDir()).isDir() && !m_watcher.directories().contains(appDir()))
+        m_watcher.addPath(appDir());
     // Universes added from the command line show up in the switcher.
     const QString registry = QFileInfo(Universes().registryPath()).absolutePath();
     if (QFileInfo(registry).isDir() && !m_watcher.directories().contains(registry))
@@ -410,7 +414,9 @@ QString Backend::heardText(const QDateTime &at, bool brief) const {
 void Backend::updateSync() {
     QString text;
     bool late = false;
-    if (m_sync) {
+    if (peerText(&text, &late)) {
+        // Paired computers say how they're connected.
+    } else if (m_sync) {
         const QDateTime current = m_fixedToday.isValid() ? QDateTime(m_fixedToday, QTime(12, 0)) : QDateTime::currentDateTime();
         QList<SyncFolder::Machine> others;
         for (const auto &m : m_sync->machines())
@@ -441,6 +447,52 @@ void Backend::updateSync() {
     m_syncText = text;
     m_syncLate = late;
     emit syncChanged();
+}
+
+// The folder pairing lives in: beside your own data file, which is also
+// where other universes' folder (universes/) is.
+QString Backend::appDir() const {
+    const QFileInfo info(m_path);
+    return info.absoluteDir().dirName() == "universes" ? QFileInfo(info.absolutePath()).absolutePath()
+                                                       : info.absolutePath();
+}
+
+bool Backend::peerText(QString *text, bool *late) const {
+    if (!QFile::exists(appDir() + "/devices.json"))
+        return false;
+    const PeerStatus status = PeerStatus::read(appDir(), m_sync.get());
+    if (status.devices.isEmpty())
+        return false;
+    const QDateTime current = m_fixedToday.isValid() ? QDateTime(m_fixedToday, QTime(12, 0)) : QDateTime::currentDateTime();
+    QStringList quiet;
+    for (const auto &e : status.devices) {
+        if (!e.link.isEmpty())
+            continue;
+        const QDateTime since = e.seen.isValid() ? e.seen : e.device.pairedAt;
+        if (!since.isValid() || since.daysTo(current) < 3)
+            continue;
+        const QDate day = since.toLocalTime().date();
+        quiet.append(!e.seen.isValid() ? tr("%1: not reachable yet").arg(e.device.name)
+                     : day.daysTo(current.date()) < 7
+                         ? tr("%1: not reachable since %2").arg(e.device.name, QLocale().dayName(day.dayOfWeek()))
+                         : tr("%1: not reachable since %2").arg(e.device.name, QLocale().toString(day, QLocale::ShortFormat)));
+    }
+    if (!quiet.isEmpty()) {
+        *late = true;
+        *text = quiet.join(QString::fromUtf8(" · "));
+        return true;
+    }
+    // The one connected now with the latest change, or else the latest heard.
+    auto best = status.devices.first();
+    for (const auto &e : status.devices) {
+        const bool better = e.link.isEmpty() != best.link.isEmpty() ? !e.link.isEmpty() : e.changed > best.changed;
+        if (better)
+            best = e;
+    }
+    const QString link = best.link.isEmpty() ? tr("not connected") : tr("connected");
+    const QString change = best.changed.isValid() ? heardText(best.changed, true) : tr("no changes yet");
+    *text = QString::fromUtf8("⇄ ") + best.device.name + QString::fromUtf8(" · ") + link + QString::fromUtf8(" · ") + change;
+    return true;
 }
 
 QDate Backend::returnsOn(const Task &task, const QDate &today) const {

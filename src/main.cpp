@@ -11,6 +11,8 @@
 
 #include "backend.h"
 #include "cli.h"
+#include "peerpanel.h"
+#include "peers.h"
 #include "theme.h"
 #include "translator.h"
 #include "universes.h"
@@ -71,6 +73,13 @@ int main(int argc, char *argv[]) {
 
     Theme theme;
     Backend backend(dataPath);
+    // The open window keeps your paired computers in step, unless another
+    // Needful here (the phone page's service, sync install) already does.
+    PeerLink link;
+    QString linkError;
+    if (!link.start(&linkError) && !linkError.isEmpty())
+        fprintf(stderr, "needful: %s\n", qPrintable(linkError));
+    PeerPanel peers(&link, PeerLink::appDirFor({}));
 
     QQmlApplicationEngine engine;
     QObject::connect(&translator, &Translator::changed, &engine, &QQmlEngine::retranslate);
@@ -79,6 +88,7 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("translator", &translator);
     engine.rootContext()->setContextProperty("theme", &theme);
     engine.rootContext()->setContextProperty("backend", &backend);
+    engine.rootContext()->setContextProperty("peers", &peers);
     engine.load(QUrl("qrc:/Main.qml"));
     if (engine.rootObjects().isEmpty())
         return 1;
