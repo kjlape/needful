@@ -7,7 +7,7 @@ ApplicationWindow {
     id: win
     width: 1180
     height: 760
-    minimumWidth: 760
+    minimumWidth: 420
     minimumHeight: 480
     visible: true
     title: "Needful"
@@ -18,6 +18,10 @@ ApplicationWindow {
     Material.roundedScale: theme.radius
 
     property bool helpVisible: false
+    // A narrow window (half a laptop screen, say) tucks the sidebar into a
+    // drawer, and keeps the detail pane beside the list while it fits.
+    readonly property bool compact: width < 860
+    readonly property bool detailFits: width >= (compact ? 620 : 860)
     property int selectedId: 0
     readonly property var selected: {
         // Re-read whenever the lists change, so the detail pane stays current.
@@ -144,6 +148,55 @@ ApplicationWindow {
         onActivated: { search.text = ""; list.forceActiveFocus() }
     }
 
+    // One sidebar, shown beside the list or, in a narrow window, in a drawer.
+    Component {
+        id: sidebarComponent
+        Sidebar {
+            views: win.views
+            onAddContext: parent => contextDialog.openForNew(parent)
+            onRenameContext: c => contextDialog.openForRename(c)
+            onPairComputer: pairDialog.openPair()
+            onJoinComputer: pairDialog.openJoin()
+            onAddUniverse: universeDialog.openForNew()
+            onRemoveUniverse: u => confirm.ask(
+                qsTr("Stop listing “%1” on this computer? Its data stays, and your paired computers keep it.").arg(u.label),
+                qsTr("Remove"), () => backend.removeUniverse(u.name))
+            onUnpairComputer: d => confirm.ask(
+                qsTr("Unpair “%1”? It can no longer connect. Its changes stay.").arg(d.name),
+                qsTr("Unpair"), () => peers.unpair(d.id))
+            onRemoveContext: c => confirm.ask(
+                qsTr("Delete the context “%1”? Its tasks and history move up to its parent.").arg(c.name),
+                qsTr("Delete"), () => backend.removeContext(c.id))
+        }
+    }
+
+    Drawer {
+        id: drawer
+        edge: Qt.application.layoutDirection === Qt.RightToLeft ? Qt.RightEdge : Qt.LeftEdge
+        width: Math.min(280, win.width - 56)
+        height: win.height
+        interactive: win.compact
+        padding: 0
+        Material.roundedScale: Material.NotRounded
+        Overlay.modal: Rectangle { color: Qt.rgba(0, 0, 0, 0.55) }
+        Loader {
+            anchors.fill: parent
+            LayoutMirroring.enabled: Qt.application.layoutDirection === Qt.RightToLeft
+            LayoutMirroring.childrenInherit: true
+            active: win.compact
+            sourceComponent: sidebarComponent
+        }
+    }
+    // Picking a list, context, or universe is the drawer's job done, and a
+    // dialog it opens shouldn't sit over it.
+    Connections {
+        target: backend
+        function onViewChanged() { drawer.close() }
+        function onUniverseChanged() { drawer.close() }
+    }
+    onDialogOpenChanged: if (dialogOpen) drawer.close()
+    onCompactChanged: if (!compact) drawer.close()
+
     // Right-to-left languages mirror the window; the Translator sets the
     // application's layout direction.
     Item {
@@ -155,47 +208,58 @@ ApplicationWindow {
             anchors.fill: parent
             spacing: 0
 
-            Sidebar {
+            Loader {
+                active: !win.compact
+                visible: active
                 Layout.preferredWidth: win.width < 1000 ? 200 : 236
                 Layout.fillHeight: true
-                views: win.views
-                onAddContext: parent => contextDialog.openForNew(parent)
-                onRenameContext: c => contextDialog.openForRename(c)
-                onPairComputer: pairDialog.openPair()
-                onJoinComputer: pairDialog.openJoin()
-                onAddUniverse: universeDialog.openForNew()
-                onRemoveUniverse: u => confirm.ask(
-                    qsTr("Stop listing “%1” on this computer? Its data stays, and your paired computers keep it.").arg(u.label),
-                    qsTr("Remove"), () => backend.removeUniverse(u.name))
-                onUnpairComputer: d => confirm.ask(
-                    qsTr("Unpair “%1”? It can no longer connect. Its changes stay.").arg(d.name),
-                    qsTr("Unpair"), () => peers.unpair(d.id))
-                onRemoveContext: c => confirm.ask(
-                    qsTr("Delete the context “%1”? Its tasks and history move up to its parent.").arg(c.name),
-                    qsTr("Delete"), () => backend.removeContext(c.id))
+                sourceComponent: sidebarComponent
             }
 
-            Rectangle { Layout.fillHeight: true; width: 1; color: "#222228" }
+            Rectangle { Layout.fillHeight: true; width: 1; color: "#222228"; visible: !win.compact }
 
             // The list.
             ColumnLayout {
+                id: listColumn
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 spacing: 0
+                // Too narrow for one header row: search drops below the title.
+                readonly property bool narrowHeader: width < 560
 
-                RowLayout {
+                GridLayout {
                     Layout.fillWidth: true
-                    Layout.margins: 20
+                    Layout.margins: win.compact ? 12 : 20
                     Layout.bottomMargin: 8
-                    spacing: 16
+                    columns: 5
+                    columnSpacing: win.compact ? 8 : 16
+                    rowSpacing: 8
+
+                    ToolButton {
+                        Layout.row: 0
+                        Layout.column: 0
+                        Layout.alignment: Qt.AlignVCenter
+                        visible: win.compact
+                        text: "\u2630"
+                        font.pixelSize: 18
+                        implicitWidth: 36
+                        implicitHeight: 36
+                        onClicked: drawer.open()
+                        ToolTip.visible: hovered
+                        ToolTip.delay: 600
+                        ToolTip.text: qsTr("Lists and contexts")
+                    }
 
                     ColumnLayout {
+                        Layout.row: 0
+                        Layout.column: 1
+                        Layout.columnSpan: listColumn.narrowHeader ? 3 : 1
                         spacing: 2
                         Layout.fillWidth: true
                         Layout.minimumWidth: 100
                         Label {
                             text: win.viewTitle()
-                            font.pixelSize: 26
+                            font.pixelSize: win.compact ? 22 : 26
                             font.bold: true
                             color: "#f2f2f4"
                         }
@@ -213,9 +277,12 @@ ApplicationWindow {
 
                     TextField {
                         id: search
+                        Layout.row: listColumn.narrowHeader ? 1 : 0
+                        Layout.column: listColumn.narrowHeader ? 0 : 2
+                        Layout.columnSpan: listColumn.narrowHeader ? 4 : 1
                         Layout.fillWidth: true
                         Layout.minimumWidth: 110
-                        Layout.maximumWidth: 260
+                        Layout.maximumWidth: listColumn.narrowHeader ? Number.POSITIVE_INFINITY : 260
                         placeholderText: qsTr("Search  /")
                         text: backend.search
                         onTextEdited: backend.search = text
@@ -224,6 +291,9 @@ ApplicationWindow {
                     }
 
                     Button {
+                        Layout.row: listColumn.narrowHeader ? 1 : 0
+                        Layout.column: listColumn.narrowHeader ? 4 : 3
+                        Layout.preferredWidth: listColumn.narrowHeader ? newTaskButton.implicitWidth : -1
                         text: qsTr("Log")
                         flat: true
                         onClicked: logDialog.openFor(backend.contextFilter)
@@ -233,6 +303,9 @@ ApplicationWindow {
                     }
 
                     Button {
+                        id: newTaskButton
+                        Layout.row: 0
+                        Layout.column: 4
                         text: qsTr("New task")
                         highlighted: true
                         onClicked: win.newTask()
@@ -350,10 +423,10 @@ ApplicationWindow {
 
             TaskDetail {
                 id: detail
-                Layout.preferredWidth: win.width < 1100 ? 300 : 360
+                Layout.preferredWidth: win.compact ? 280 : win.width < 1100 ? 300 : 360
                 Layout.fillHeight: true
-                // A narrow window gives the list the room; Enter still edits.
-                visible: win.hasSelection && win.width >= 860
+                // A very narrow window gives the list the room; Enter still edits.
+                visible: win.hasSelection && win.detailFits
                 task: win.selected
                 onCompleteRequested: win.completeSelected()
                 onTodayRequested: win.todaySelected()
