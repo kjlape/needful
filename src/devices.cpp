@@ -170,7 +170,14 @@ void Devices::setReach(const QString &id, const QStringList &hosts, const QDateT
     put(id, "reach", QJsonArray::fromStringList(hosts), now);
 }
 
-QString Devices::relay() const { return m_doc.value("relay").toArray().at(0).toString(); }
+// iroh's public relay, run by n0, until one is set or it's turned off.
+const QString Devices::PublicRelay = "https://use1-1.relay.n0.iroh.link";
+
+QString Devices::relay() const {
+    if (!m_doc.contains("relay"))
+        return PublicRelay;
+    return m_doc.value("relay").toArray().at(0).toString();
+}
 
 void Devices::setRelay(const QString &url, const QDateTime &now) {
     QDateTime at = now;

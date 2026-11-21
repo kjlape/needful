@@ -198,8 +198,8 @@ void PeerLink::nameThisDevice() {
     saveDevices();
 }
 
-bool PeerLink::startLink(QString *error) {
-    m_relay = m_devices.relay();
+bool PeerLink::startLink(QString *error, const QString &relay) {
+    m_relay = relay.isEmpty() ? savedRelay() : relay;
     const QJsonObject config{{"secret", m_devices.secret()},
                              {"port", m_options.port},
                              {"relay", m_relay.isEmpty() ? QJsonValue() : QJsonValue(m_relay)},
@@ -277,7 +277,10 @@ QString PeerLink::failure(const QString &reason) const {
                       "again there for a new one.";
     if (reason == "not_found")
         return "No computer on this network is waiting for that code. Check the code, or, for a computer on "
-               "another network, add --at <host>.";
+               "another network, add --at <host>, or set a relay there (needful sync relay <url>) for a code "
+               "that works from anywhere.";
+    if (reason == "bad_code")
+        return "The part of that code after the words is cut off or mistyped. Copy the whole code again.";
     if (reason == "not_waiting")
         return "That computer isn't waiting to pair. Run needful sync pair there first; each code works once.";
     if (reason == "unreachable")
@@ -307,7 +310,7 @@ void PeerLink::pair() {
         emit failed("Could not get this computer's list ready to share.");
         return;
     }
-    m_pairCode = newCode();
+    m_pairCode = fullCode(newCode());
     command({{"op", "pair_open"}, {"code", m_pairCode}, {"info", info()}});
     m_pairExpiry.start();
     emit pairCode(m_pairCode, name(), m_devices.fingerprint());
@@ -333,8 +336,44 @@ void PeerLink::join(const QString &code, const QString &at) {
         emit failed("Type the code the other computer shows: needful sync join 7-violet-crumble-tango");
         return;
     }
+    // A code from a computer waiting at a relay is answered there; with no
+    // relay here, borrow the code's until pairing is done.
+    char *relay = needful_link_code_relay(code.toUtf8().constData());
+    const QString codeRelay = QString::fromUtf8(relay ? relay : "");
+    needful_link_free_string(relay);
+    if (!codeRelay.isEmpty() && m_relay.isEmpty()) {
+        stopLink();
+        if (!startLink(&error, codeRelay)) {
+            emit failed(error);
+            startLink(nullptr);
+            return;
+        }
+    }
     m_joinCode = code;
+    m_joinRelay = codeRelay;
     command({{"op", "pair_join"}, {"code", code}, {"at", at}, {"info", info()}});
+}
+
+QString PeerLink::fullCode(const QString &words) const {
+    char *code = needful_link_pair_code(m_link, words.toUtf8().constData());
+    const QString text = QString::fromUtf8(code);
+    needful_link_free_string(code);
+    return text;
+}
+
+QString PeerLink::savedRelay() const {
+    const QString relay = m_devices.relay();
+    return m_options.loopback && relay == Devices::PublicRelay ? QString() : relay;
+}
+
+// Back to the saved relay, or none, after borrowing one to join.
+bool PeerLink::returnRelay() {
+    if (m_relay == savedRelay())
+        return false;
+    stopLink();
+    m_up.clear();
+    startLink(nullptr);
+    return true;
 }
 
 void PeerLink::answer(bool accept) { command({{"op", "pair_answer"}, {"accept", accept}}); }
@@ -379,6 +418,11 @@ void PeerLink::handle(const QJsonObject &event) {
     } else if (ev == "paired") {
         const QJsonObject theirs = event.value("info").toObject();
         m_devices.pair(id, theirs.value("name").toString(), theirs.value("kind").toString(), now);
+        // Joined through the relay in the code: meet there from now on, as
+        // the computer joined does.
+        const bool moving = !m_joinCode.isEmpty() && !m_joinRelay.isEmpty() && m_joinRelay != m_devices.relay();
+        if (moving)
+            m_devices.setRelay(m_joinRelay, now);
         saveDevices();
         QStringList addresses;
         for (const auto &a : event.value("addrs").toArray())
@@ -396,7 +440,10 @@ void PeerLink::handle(const QJsonObject &event) {
             ensureSynced();
             emit paired(theirs.value("name").toString(), Devices::fingerprintOf(id));
         }
-        dial(id, addresses);
+        m_joinRelay.clear();
+        // Restarted at a new relay, it dials everyone once ready.
+        if (!returnRelay())
+            dial(id, addresses);
         m_stateDelay.start();
         emit changed();
     } else if (ev == "pair_failed") {
@@ -404,7 +451,9 @@ void PeerLink::handle(const QJsonObject &event) {
         m_pairCode.clear();
         m_pairExpiry.stop();
         m_joinCode.clear();
+        m_joinRelay.clear();
         emit failed(message);
+        returnRelay();
     }
 }
 
@@ -417,7 +466,7 @@ void PeerLink::handleMessage(const QString &peer, const QJsonObject &message) {
             return;
         saveDevices();
         applyTrust();
-        if (m_devices.relay() != m_relay) {
+        if (savedRelay() != m_relay) {
             // A relay was set or cleared on another computer.
             stopLink();
             m_up.clear();

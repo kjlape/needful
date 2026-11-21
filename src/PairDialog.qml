@@ -60,7 +60,11 @@ Dialog {
             selectByMouse: true
             text: peers.code
             color: theme.accent
-            font.pixelSize: 24
+            // With a relay the code carries where to find this computer, so
+            // it's long and meant to be copied, not read out.
+            Layout.fillWidth: true
+            wrapMode: TextEdit.WrapAnywhere
+            font.pixelSize: peers.code.indexOf(".") >= 0 ? 14 : 24
             font.bold: true
         }
         Label {

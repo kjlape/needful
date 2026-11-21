@@ -43,7 +43,7 @@ public:
     struct Options {
         int port = DefaultPort;
         bool mdns = true;
-        bool loopback = false; // Tests: listen on 127.0.0.1 only.
+        bool loopback = false; // Tests: listen on 127.0.0.1 only, with no public relay.
         bool ipc = true;
     };
 
@@ -132,7 +132,12 @@ private:
     void nameThisDevice();
     void serveClient(QLocalSocket *socket);
     QString failure(const QString &reason) const;
-    bool startLink(QString *error);
+    // relay, when given, is used instead of the saved one, as a joiner
+    // with none does to reach a computer waiting at the relay in its code.
+    bool startLink(QString *error, const QString &relay = {});
+    bool returnRelay(); // True when the link restarted.
+    QString savedRelay() const;
+    QString fullCode(const QString &words) const;
     void stopLink();
 
     QString m_usual, m_dir;
@@ -153,7 +158,7 @@ private:
 
     QString m_pairCode;
     QTimer m_pairExpiry;
-    QString m_joinCode, m_joinFrom;
+    QString m_joinCode, m_joinFrom, m_joinRelay;
     QJsonObject m_joinInfo;
     std::unique_ptr<Staging> m_staging;
 

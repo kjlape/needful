@@ -62,6 +62,9 @@ public:
     void unpair(const QString &id, const QDateTime &now);
     void setName(const QString &id, const QString &name, const QDateTime &now);
     void setReach(const QString &id, const QStringList &hosts, const QDateTime &now);
+    // The relay paired computers meet at: the public one until another is
+    // set, or empty once it's turned off.
+    static const QString PublicRelay;
     QString relay() const;
     void setRelay(const QString &url, const QDateTime &now);
 

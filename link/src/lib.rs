@@ -1,13 +1,13 @@
 //! The link between paired Needfuls: an encrypted connection addressed by
-//! each install's key, found on the same network by mDNS or dialed at an
-//! address, and a one-time code for pairing two installs.
+//! each install's key, found on the same network by mDNS, dialed at an
+//! address, or met at a relay, and a one-time code for pairing two installs.
 //!
 //! It knows nothing about lists or files. Needful (C++) drives it through a
 //! small C interface: commands go in as JSON, events come out as JSON, and a
 //! pipe becomes readable whenever there are events to take.
 //!
-//! No outside server is used. iroh's public relays and DNS address lookup are
-//! never turned on; a relay is used only when one is named.
+//! iroh's DNS address lookup is never turned on, and the only relay is the
+//! one named in the config: Needful names iroh's public one by default.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{c_char, c_int, CStr, CString};
@@ -177,6 +177,37 @@ fn unb64(value: &Value) -> anyhow::Result<Vec<u8>> {
 /// same network which machine is waiting, without giving away the rest.
 fn nameplate(code: &str) -> String {
     code.split('-').next().unwrap_or("").to_string()
+}
+
+/// Where a code says the waiting machine is: its key and the relay it's
+/// waiting at. A code carries this after its words, as
+/// `7-violet-crumble-tango.<base64url of key and relay>`, when the waiting
+/// machine has a relay, so a joiner on any network can reach it there.
+struct Address {
+    id: EndpointId,
+    relay: RelayUrl,
+}
+
+const ADDRESS: base64::engine::GeneralPurpose = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+fn address_text(id: &EndpointId, relay: &RelayUrl) -> String {
+    let mut bytes = id.as_bytes().to_vec();
+    bytes.extend_from_slice(relay.to_string().as_bytes());
+    ADDRESS.encode(bytes)
+}
+
+/// A code's words, normalized, and the address after them, if it has one.
+/// None when there's an address part that doesn't read as one.
+fn split_code(text: &str) -> Option<(String, Option<Address>)> {
+    let Some((words, rest)) = text.trim().split_once('.') else { return Some((normalize(text), None)) };
+    let rest: String = rest.chars().filter(|c| !c.is_whitespace()).collect();
+    let bytes = ADDRESS.decode(rest).ok()?;
+    if bytes.len() <= 32 {
+        return None;
+    }
+    let id = EndpointId::from_bytes(bytes[..32].try_into().ok()?).ok()?;
+    let relay = std::str::from_utf8(&bytes[32..]).ok()?.parse::<RelayUrl>().ok()?;
+    Some((normalize(words), Some(Address { id, relay })))
 }
 
 fn normalize(code: &str) -> String {
@@ -404,7 +435,7 @@ impl Link {
                 }
             }
             "pair_open" => {
-                let code = normalize(cmd["code"].as_str().unwrap_or(""));
+                let code = split_code(cmd["code"].as_str().unwrap_or("")).map(|(words, _)| words).unwrap_or_default();
                 let plate = nameplate(&code);
                 *shared.pairing.lock().unwrap() = Some(Pairing { code, info: cmd["info"].clone(), busy: false });
                 ep.set_user_data_for_address_lookup(UserData::try_from(format!("pair={plate}")).ok());
@@ -414,11 +445,14 @@ impl Link {
                 ep.set_user_data_for_address_lookup(None);
             }
             "pair_join" => {
-                let code = normalize(cmd["code"].as_str().unwrap_or(""));
+                let Some((code, address)) = split_code(cmd["code"].as_str().unwrap_or("")) else {
+                    shared.emit(json!({"ev": "pair_failed", "reason": "bad_code"}));
+                    return;
+                };
                 let at = cmd["at"].as_str().filter(|s| !s.is_empty()).map(String::from);
                 let info = cmd["info"].clone();
                 self.runtime.spawn(async move {
-                    if let Err(reason) = pair_as_guest(shared.clone(), ep, code, at, info).await {
+                    if let Err(reason) = pair_as_guest(shared.clone(), ep, code, address, at, info).await {
                         shared.emit(json!({"ev": "pair_failed", "reason": reason}));
                     }
                 });
@@ -669,10 +703,15 @@ async fn pair_as_guest(
     shared: Arc<Shared>,
     ep: Endpoint,
     code: String,
+    address: Option<Address>,
     at: Option<String>,
     info: Value,
 ) -> Result<(), String> {
-    let addr = find_host(&shared, &code, at).await?;
+    let addr = match address {
+        // An address given with --at is checked first, as without a relay.
+        Some(address) if at.is_none() => EndpointAddr::from_parts(address.id, [TransportAddr::Relay(address.relay)]),
+        _ => find_host(&shared, &code, at).await?,
+    };
     let host = addr.id;
     if host == shared.me {
         return Err("self".into());
@@ -779,6 +818,36 @@ pub extern "C" fn needful_link_free_string(text: *mut c_char) {
 pub extern "C" fn needful_link_stop(link: *mut Link) {
     if !link.is_null() {
         drop(unsafe { Box::from_raw(link) });
+    }
+}
+
+/// The code to show for pairing with these words: the words alone, or, when
+/// this link has a relay, the words and where to find this machine there.
+#[no_mangle]
+pub extern "C" fn needful_link_pair_code(link: *mut Link, words: *const c_char) -> *mut c_char {
+    let shared = &unsafe { &*link }.shared;
+    let words = normalize(&unsafe { CStr::from_ptr(words) }.to_string_lossy());
+    let code = match &shared.relay {
+        Some(relay) => format!("{words}.{}", address_text(&shared.me, relay)),
+        None => words,
+    };
+    CString::new(code).unwrap_or_default().into_raw()
+}
+
+/// The relay a code says to find the waiting machine at, or null when it
+/// names none.
+#[no_mangle]
+pub extern "C" fn needful_link_code_relay(code: *const c_char) -> *mut c_char {
+    let text = unsafe { CStr::from_ptr(code) }.to_string_lossy();
+    match split_code(&text) {
+        // Without the slash a URL gains on parsing, so it reads as the
+        // waiting machine's relay does when that was given without one.
+        Some((_, Some(address))) => {
+            let url = address.relay.to_string();
+            let url = url.strip_suffix('/').filter(|u| !u[u.find("://").map_or(0, |i| i + 3)..].contains('/')).unwrap_or(&url);
+            CString::new(url).unwrap_or_default().into_raw()
+        }
+        _ => std::ptr::null_mut(),
     }
 }
 

@@ -12,4 +12,6 @@ void needful_link_command(NeedfulLink *link, const char *command);
 void needful_link_free_string(char *text);
 void needful_link_stop(NeedfulLink *link);
 char *needful_link_public_key(const char *secret);
+char *needful_link_pair_code(NeedfulLink *link, const char *words);
+char *needful_link_code_relay(const char *code);
 }

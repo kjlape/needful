@@ -24,6 +24,10 @@ anyhow = "1"
 libc = "0.2"
 n0-future = "0.3"
 
+[dev-dependencies]
+# A relay to pair through in the tests.
+iroh-relay = { version = "1.4.1", features = ["server"] }
+
 [profile.release]
 opt-level = "s"
 lto = true

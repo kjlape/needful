@@ -1332,6 +1332,27 @@ private slots:
         QVERIFY(QFile::exists(unit));
     }
 
+    void devicesUseThePublicRelayUntilToldOtherwise()
+    {
+        QTemporaryDir dir;
+        QDir().mkpath(dir.filePath("a"));
+        QDir().mkpath(dir.filePath("b"));
+        Devices a(dir.filePath("a")), b(dir.filePath("b"));
+        QVERIFY(a.load());
+        QVERIFY(b.load());
+        QCOMPARE(a.relay(), Devices::PublicRelay);
+        // Turned off on one, it's off on the other, which never chose.
+        a.setRelay({}, QDateTime(saturday, QTime(9, 0)));
+        QCOMPARE(a.relay(), QString());
+        QVERIFY(b.merge(a.toJson()));
+        QCOMPARE(b.relay(), QString());
+        // And stays off after a save and load.
+        QVERIFY(b.save());
+        Devices again(dir.filePath("b"));
+        QVERIFY(again.load());
+        QCOMPARE(again.relay(), QString());
+    }
+
     void devicesMergeLatestAndSpreadUnpairing()
     {
         QTemporaryDir dir;

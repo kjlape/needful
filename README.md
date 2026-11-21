@@ -86,7 +86,8 @@ whatever another process saved, never over it.
 ## On your other computers
 
 Pair your computers once, by a code, and they keep each other in step with
-nothing in between: no account, no sync tool, no outside server.
+nothing in between: no account and no sync tool. Only a relay that passes along
+traffic it can't read helps them find each other across networks; see below.
 
 ```sh
 needful sync pair                            # on the desktop: shows a code
@@ -117,15 +118,35 @@ that computer). Pairing a computer with any one of yours trusts it on all of
 them, and unpairing it on one unpairs it everywhere.
 
 On the same network, paired computers find each other with nothing to set
-up. Away from home, they connect whenever one can reach the other: at the
-address it was last seen at, or one you give it. Needful listens on port
-7787 (UDP, and TCP for pairing with `--at`).
+up. Away from home, they meet at a relay and then connect directly whenever they
+can: at the address one was last seen at, one you give it, or one they work
+out through the relay. Needful listens on port 7787 (UDP, and TCP for pairing
+with `--at`).
+
+The relay is iroh's public one, run by [n0](https://n0.computer), until you
+choose another. It only passes along encrypted traffic it can't read, and
+stays out of the way once two computers have a direct path. Because of it, a
+pairing code carries where to find the computer that shows it, so it's long
+and meant to be copied, and it works from any network, like a laptop on a
+phone's hotspot and a desktop at home:
+
+```sh
+needful sync pair                                # shows 7-violet-crumble-tango.<…>
+needful sync join '7-violet-crumble-tango.<…>'   # on the laptop, wherever it is
+```
+
+Use a relay you run instead, or none, with `sync relay`; every paired computer
+follows the latest choice. With none, codes are just the words, and computers
+pair on the same network or with `--at`. The public relay is a stopgap: see
+[docs/roadmap.md](docs/roadmap.md).
 
 ```sh
 needful sync status                          # who's connected, and each one's last change
 needful sync join <code> --at desktop.example.net   # pair across networks
 needful sync reach desktop desktop.example.net      # look for it there too
 needful sync relay https://relay.example.net        # meet through an iroh-relay you run
+needful sync relay off                              # no relay: only direct connections
+needful sync relay public                           # back to iroh's public relay
 needful sync unpair old-mac                  # it can no longer connect; its changes stay
 needful sync rename laptop
 needful sync install                         # keep the link up with the window closed
@@ -145,9 +166,11 @@ install` (needful-link.service on Linux, a launchd agent on macOS). Each
 passes along everything it has, so run `sync install` on one always-on
 computer, like a desktop, and it carries the laptop's changes to your
 other computers even after every window is closed, and even if they're
-never on at once; `sync uninstall` stops it. A relay is only used if you add one; it passes along traffic it
-can't read, and every paired computer learns of it. The link is encrypted
+never on at once; `sync uninstall` stops it. The relay passes along traffic it
+can't read, and every paired computer learns of a change to it. The link is encrypted
 end to end, and each computer only talks to computers it has paired with.
+
+What may come later for pairing and sync is in [docs/roadmap.md](docs/roadmap.md).
 
 ### Through a sync folder
 
@@ -278,7 +301,7 @@ bin/install   # an Arch package, so it shows up in the app launcher
 
 Building needs Rust's `cargo` as well as Qt: the link between paired
 computers (`link/`) is a small Rust library on [iroh](https://iroh.computer),
-with iroh's public relays and address lookup turned off.
+with iroh's address lookup turned off and a single relay: n0's public one unless you set another.
 
 Needful is C++ and Qt Quick with no platform-specific dependencies: no D-Bus,
 no portals, and the Omarchy theme and language are followed when present and

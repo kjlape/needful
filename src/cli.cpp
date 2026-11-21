@@ -896,8 +896,18 @@ int syncPeers(const Command &command, const QString &action, const QStringList &
     // action == "relay"
     const QString url = wanted;
     if (url.isEmpty()) {
-        print(stdout, devices.relay().isEmpty() ? QString("No relay. Paired computers connect only when one can reach the other.")
-                                                : "Relay: " + devices.relay());
+        const QString relay = devices.relay();
+        print(stdout, relay.isEmpty()                ? QString("No relay. Paired computers connect only when one can reach the other.")
+                      : relay == Devices::PublicRelay ? "Relay: " + relay + " (iroh's public relay, the default)"
+                                                     : "Relay: " + relay);
+        return 0;
+    }
+    if (url == "public" || url == "default") {
+        devices.setRelay(Devices::PublicRelay, now);
+        if (!devices.save(&error))
+            return fail(error);
+        print(stdout, QString("Paired computers that can't reach each other will meet through iroh's public relay,\n"
+                              "run by n0. It passes along encrypted traffic and can't read it."));
         return 0;
     }
     if (url == "off" || url == "none") {
@@ -909,12 +919,13 @@ int syncPeers(const Command &command, const QString &action, const QStringList &
     }
     const QUrl parsed(url);
     if (!parsed.isValid() || (parsed.scheme() != "https" && parsed.scheme() != "http") || parsed.host().isEmpty())
-        return fail("Give the relay's address, like https://relay.example.net");
+        return fail("Give the relay's address, like https://relay.example.net, or public, or off");
     devices.setRelay(url, now);
     if (!devices.save(&error))
         return fail(error);
     print(stdout, QString("Paired computers that can't reach each other will meet through\n"
-                          "%1. It passes along encrypted traffic and can't read it.").arg(parsed.host()));
+                          "%1. It passes along encrypted traffic and can't read it.\n"
+                          "Codes from needful sync pair now work from any network.").arg(parsed.host()));
     return 0;
 }
 
@@ -976,7 +987,7 @@ int peerStatus(const Command &command, const Backend &backend, const SyncFolder 
         print(stdout, "\nNeedful isn't running here, so nothing is passed along until it is. Open the window, or "
                       "keep it running with: needful sync install");
     if (!status.relay.isEmpty())
-        print(stdout, "Relay  " + status.relay);
+        print(stdout, "Relay  " + status.relay + (status.relay == Devices::PublicRelay ? " (public)" : ""));
     return 0;
 }
 
@@ -984,7 +995,7 @@ int sync(const QStringList &arguments) {
     Command command("sync", "Keep the same Needful on your computers: paired with each other by code, or through "
                             "a folder a sync tool keeps in step.");
     command.parser.addPositionalArgument("action", "pair, join <code>, status, unpair <machine>, reach <machine> <host>, "
-                                                   "relay <url>|off, install, uninstall, setup <folder>, rename <name>, "
+                                                   "relay <url>|public|off, install, uninstall, setup <folder>, rename <name>, "
                                                    "forget <machine>, or rsync install <host> / rsync uninstall",
                                          "<action>");
     command.parser.addOption({"at", "With join: the other computer's address, when it isn't on this network", "host"});

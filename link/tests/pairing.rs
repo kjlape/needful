@@ -132,3 +132,80 @@ fn pair_on_the_same_network_by_code_alone() {
     a.wait("paired");
     b.wait("paired");
 }
+
+/// Two computers that can't find each other, one waiting at a relay: the
+/// code it shows carries where to find it, so the other joins by code alone.
+fn local_relay(runtime: &tokio::runtime::Runtime) -> (iroh_relay::server::Server, String) {
+    use iroh_relay::server::{RelayConfig, Server, ServerConfig};
+    let server = runtime.block_on(async {
+        let mut config = ServerConfig::default();
+        config.relay = Some(RelayConfig::new(([127, 0, 0, 1], 0)));
+        Server::spawn(config).await.unwrap()
+    });
+    let url = format!("http://{}", server.http_addr().unwrap());
+    (server, url)
+}
+
+#[test]
+fn pair_through_a_relay_by_code_alone() {
+    pair_through_relay(false);
+}
+
+/// The joiner has a relay of its own, like the public one, and still finds
+/// the waiting computer at the one in the code.
+#[test]
+fn pair_through_the_codes_relay_from_another() {
+    pair_through_relay(true);
+}
+
+fn pair_through_relay(joiner_has_its_own: bool) {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (server, relay) = local_relay(&runtime);
+    let (other, other_url) = local_relay(&runtime);
+
+    let start = |secret: &str, relay: &str| {
+        let config =
+            json!({"secret": secret, "port": 0, "mdns": false, "loopback": true, "relay": relay}).to_string();
+        let config = CString::new(config).unwrap();
+        let link = needful_link_start(config.as_ptr(), std::ptr::null_mut());
+        assert!(!link.is_null());
+        L(link)
+    };
+    let a = start(&"99".repeat(32), &relay);
+    let ra = a.wait("ready");
+    let words = CString::new("21-maple-otter-quilt").unwrap();
+    let code = needful_link_pair_code(a.0, words.as_ptr());
+    let code_text = unsafe { CStr::from_ptr(code) }.to_str().unwrap().to_string();
+    needful_link_free_string(code);
+    assert!(code_text.starts_with("21-maple-otter-quilt."), "{code_text}");
+
+    // What the joiner borrows to get there.
+    let code_c = CString::new(code_text.clone()).unwrap();
+    let named = needful_link_code_relay(code_c.as_ptr());
+    let named_text = unsafe { CStr::from_ptr(named) }.to_str().unwrap().to_string();
+    needful_link_free_string(named);
+    assert_eq!(named_text.trim_end_matches('/'), relay);
+
+    let b = start(&"aa".repeat(32), if joiner_has_its_own { &other_url } else { &named_text });
+    let rb = b.wait("ready");
+    a.cmd(json!({"op": "pair_open", "code": code_text, "info": {"name": "desktop"}}));
+    // Typed with the words in capitals, as people do.
+    let (head, tail) = code_text.split_once('.').unwrap();
+    b.cmd(json!({"op": "pair_join", "code": format!("{}.{tail}", head.to_uppercase()), "info": {"name": "laptop"}}));
+    assert_eq!(b.wait("pair_confirm")["id"], ra["id"]);
+    b.cmd(json!({"op": "pair_answer", "accept": true}));
+    assert_eq!(a.wait("paired")["id"], rb["id"]);
+    b.wait("paired");
+    drop((a, b));
+    drop((server, other));
+}
+
+#[test]
+fn a_cut_off_code_says_so() {
+    let b = L::start(&"bb".repeat(32));
+    b.wait("ready");
+    b.cmd(json!({"op": "pair_join", "code": "4-one-two-three.AAAA", "info": {}}));
+    assert_eq!(b.wait("pair_failed")["reason"], "bad_code");
+    let plain = CString::new("4-one-two-three").unwrap();
+    assert!(needful_link_code_relay(plain.as_ptr()).is_null());
+}
