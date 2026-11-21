@@ -206,6 +206,8 @@ QString tailnetUrl(const QString &universe) {
 #ifdef Q_OS_UNIX
 // SIGTERM from systemd and Ctrl+C both end the event loop, so the server
 // shuts down cleanly. The handler only writes a byte; Qt does the rest.
+// exit(), not quit(): quit() does nothing outside QCoreApplication::exec(),
+// and sync pair and join wait in a local QEventLoop. exit() ends every loop.
 int signalPipe[2];
 void onSignal(int) {
     const char byte = 1;
@@ -218,7 +220,7 @@ void quitOnSignals() {
     QObject::connect(notifier, &QSocketNotifier::activated, qApp, [] {
         char byte;
         [[maybe_unused]] const auto read = ::read(signalPipe[1], &byte, 1);
-        QCoreApplication::quit();
+        QCoreApplication::exit(0);
     });
     std::signal(SIGTERM, onSignal);
     std::signal(SIGINT, onSignal);
