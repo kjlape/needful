@@ -22,11 +22,18 @@ means oil, filter, resetting the reminder, and writing down the mileage, and
 each time you either keep them in your head or retype them into the note.
 History can't show that the reminder never got reset last time.
 
+Much of this happens away from the desk. You're at the parts counter, under
+the car, or in the hardware store aisle, and that's where you need to see the
+steps, tick them off, and add the one you just found. The phone page has to be
+a first-class place for checklists, not a read-only view of them.
+
 ## Appetite
 
 One small cycle. Scope covers a checklist on any task, its reset for each
 time, its snapshot in history, and support in the app, the CLI, the phone
-page, and sync. No nested steps, no due dates or priorities on steps, and no
+page, and sync. The phone page gets the full checklist (see, check, add, and
+finish with boxes left), since that's where most checking happens. No nested
+steps, no due dates or priorities on steps, and no
 steps as tasks of their own.
 
 ## Solution
@@ -92,6 +99,45 @@ History
     Reminder button is broken
 ```
 
+### On the phone
+
+The phone page does everything the desktop does with checklists, because
+it's where you are when you do the work.
+
+- **The row** shows the next unchecked step and the count under the title,
+  the same as on the desktop: "Buy a cabin filter · 0/2".
+- **The task sheet** lists the steps above its Done / Today / Snooze / Skip
+  buttons, each a full-width row with a big tap target. One tap checks, and
+  another tap unchecks. There's no confirmation and no save button.
+- **Add a step** is a field at the end of the list, "Add a step for this
+  time", with `enterkeyhint="done"`. Submitting it adds the step and keeps the
+  keyboard up for the next one, so typing three things in the store aisle
+  takes three Enters.
+- **Done with boxes left** is the same as on the desktop: the done sheet
+  lists the unchecked steps above the note, and its button reads "Done
+  anyway".
+- **Adding a task** from the `+` sheet gets an optional steps field, one step
+  per line, so a "Hardware store" one-time task with its list takes a single
+  form.
+- **History** on the phone shows each completion's steps as done or skipped,
+  the same as the desktop, both in the task sheet's history and in the History
+  tab.
+
+```
+Phone · Needful                      Task sheet
+───────────────                      ──────────
+▌Replace the cabin filter   Due      CR-V
+  Buy a cabin filter · 0/2           Replace the cabin filter
+  CR-V                               [Due today] [Once]
+▌Oil change                 2d late
+  Oil filter · 1/4                   ┌────────────────────────────┐
+  Tacoma                             │ ○  Buy a cabin filter      │
+                                     │ ○  Swap it in              │
+                                     │ +  Add a step for this time│
+                                     └────────────────────────────┘
+                              [+]    [ Done ] [Today] [Snooze] [Skip]
+```
+
 ### Command line
 
 ```sh
@@ -123,7 +169,22 @@ whether it's for this time only. Completions gain their snapshot.
   steps from the snapshot, so the snapshot has to keep them all, not only the
   unchecked ones.
 
+- **Checking on a flaky connection.** The phone may be on one bar of
+  cellular through the relay. A tap checks the box right away and sends it in
+  the background. If the send fails, the box goes back and a toast says so.
+  Sends go out in tap order, so quick taps can't arrive out of order.
+- **Polling over a tap.** The page refreshes every few seconds. A refresh
+  that lands while a check is still on its way mustn't flip the box back.
+  Hold off rendering a step until the desktop has replied to its pending
+  check.
+- **Phone API.** Checking, adding a step, and steps in task and history
+  payloads are new endpoints and fields in `webapi.cpp`. They should be the
+  same store calls the desktop and the CLI use, not a separate path.
+
 ## No Gos
+
+- Offline checking queued until the desktop can be reached again. Checks
+  need the desktop to answer, like every other action on the phone page.
 
 - Nested steps, or steps with their own dates, priorities, or contexts.
 - Turning a step into a task, or a task into a step.
