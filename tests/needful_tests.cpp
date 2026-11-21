@@ -837,6 +837,43 @@ private slots:
         QVERIFY(error.contains("another computer"));
     }
 
+    // The window adds a universe and opens it, and removing the open one
+    // goes back to yours.
+    void windowAddsAndRemovesUniverses()
+    {
+        QTemporaryDir dir;
+        const QByteArray oldData = qgetenv("NEEDFUL_DATA");
+        qputenv("NEEDFUL_DATA", dir.filePath("needful.json").toUtf8());
+        auto restore = qScopeGuard([&] {
+            if (oldData.isEmpty()) qunsetenv("NEEDFUL_DATA"); else qputenv("NEEDFUL_DATA", oldData);
+        });
+
+        Backend window;
+        window.setToday(saturday);
+        window.saveTask({{"title", "Oil change"}});
+        QVERIFY(!window.addUniverse("no spaces").isEmpty());
+        QVERIFY(!window.addUniverse("mine").isEmpty());
+        QCOMPARE(window.universe(), QString("mine"));
+
+        QCOMPARE(window.addUniverse(" Scratch "), QString());
+        QCOMPARE(window.universe(), QString("scratch"));
+        QVERIFY(titles(window.store()).isEmpty());
+        QVERIFY(!window.addUniverse("scratch").isEmpty()); // Already there.
+
+        QCOMPARE(window.addUniverse("house", dir.filePath("house-sync"), "kitchen"), QString());
+        QCOMPARE(window.universe(), QString("house"));
+        QVERIFY(window.sync());
+        QCOMPARE(window.universes().size(), 3);
+
+        window.removeUniverse("house");
+        QCOMPARE(window.universe(), QString("mine"));
+        QCOMPARE(titles(window.store()), QStringList{"Oil change"});
+        QCOMPARE(window.universes().size(), 2);
+        QVERIFY(QFileInfo::exists(dir.filePath("house-sync")));
+        window.removeUniverse("mine");
+        QVERIFY(!window.error().isEmpty());
+    }
+
     // Her list and yours on one computer: yours by default, hers when asked.
     void universesKeepListsApart()
     {

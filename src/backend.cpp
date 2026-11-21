@@ -123,6 +123,39 @@ void Backend::openUniverse(const QString &name) {
     refresh();
 }
 
+QString Backend::addUniverse(const QString &name, const QString &folder, const QString &machine) {
+    const QString wanted = name.trimmed().toLower();
+    Universes universes;
+    const bool known = !universes.dataPath(wanted).isEmpty();
+    if (known)
+        return tr("There's already a universe named %1.").arg(wanted);
+    QString error;
+    const QString path = universes.add(wanted, &error);
+    if (path.isEmpty())
+        return error;
+    QString where = folder.trimmed();
+    if (where == "~" || where.startsWith("~/"))
+        where = QDir::homePath() + where.mid(1);
+    if (!where.isEmpty()) {
+        SyncFolder::Setup result;
+        if (!SyncFolder::setup(path, where, machine.trimmed(), QDateTime::currentDateTime(), &result, &error, path)) {
+            universes.remove(wanted, nullptr);
+            return error;
+        }
+    }
+    openUniverse(wanted);
+    return {};
+}
+
+void Backend::removeUniverse(const QString &name) {
+    if (name == m_universe)
+        openUniverse(Universes::Mine);
+    QString error;
+    if (!Universes().remove(name, &error))
+        setError(error);
+    loadUniverses();
+}
+
 void Backend::reloadFromDisk() {
     const CatchUp caught = catchUp();
     watch();

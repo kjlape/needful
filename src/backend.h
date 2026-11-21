@@ -62,6 +62,13 @@ public:
     // Switches the window to another universe's list, starting fresh on it:
     // every context, no search, and nothing to undo.
     Q_INVOKABLE void openUniverse(const QString &name);
+    // Adds a universe and opens it: kept on this computer alone, or syncing
+    // through a folder when one is given (joining it if others already do).
+    // `machine` names this computer there. Returns why it couldn't, or empty.
+    Q_INVOKABLE QString addUniverse(const QString &name, const QString &folder = {}, const QString &machine = {});
+    // Stops listing a universe here; its data stays. An open one goes back
+    // to yours first.
+    Q_INVOKABLE void removeUniverse(const QString &name);
     bool canUndo() const { return !m_undo.isEmpty(); }
     bool canRedo() const { return !m_redo.isEmpty(); }
     QString syncText() const { return m_syncText; }

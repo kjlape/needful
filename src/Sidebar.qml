@@ -16,6 +16,8 @@ Rectangle {
     signal pairComputer()
     signal joinComputer()
     signal unpairComputer(var device)
+    signal addUniverse()
+    signal removeUniverse(var universe)
 
     component SideItem: ItemDelegate {
         id: item
@@ -79,10 +81,12 @@ Rectangle {
                 onClicked: sidebarMenu.popup()
                 ToolTip.visible: hovered
                 ToolTip.delay: 600
-                ToolTip.text: qsTr("Your computers")
+                ToolTip.text: qsTr("Computers and universes")
                 Menu {
                     id: sidebarMenu
                     Material.roundedScale: theme.radius
+                    MenuItem { text: qsTr("New universe…"); onTriggered: sidebar.addUniverse() }
+                    MenuSeparator {}
                     MenuItem { text: qsTr("Pair a computer…"); onTriggered: sidebar.pairComputer() }
                     MenuItem { text: qsTr("Join a computer…"); onTriggered: sidebar.joinComputer() }
                     Menu {
@@ -106,6 +110,7 @@ Rectangle {
         }
 
         // Other universes, one click (or U) away; yours is where it starts.
+        // Right-click one to remove it; + adds another.
         Flow {
             visible: backend.universes.length > 1
             Layout.fillWidth: true
@@ -123,6 +128,16 @@ Rectangle {
                     rightPadding: 9
                     hoverEnabled: true
                     onClicked: backend.openUniverse(modelData.name)
+                    TapHandler {
+                        acceptedButtons: Qt.RightButton
+                        enabled: pill.modelData.name !== "mine"
+                        onTapped: pillMenu.popup()
+                    }
+                    Menu {
+                        id: pillMenu
+                        Material.roundedScale: theme.radius
+                        MenuItem { text: qsTr("Remove from this computer"); onTriggered: sidebar.removeUniverse(pill.modelData) }
+                    }
                     background: Rectangle {
                         radius: Math.min(10, theme.radius + 6)
                         color: pill.modelData.open ? theme.accent
@@ -135,6 +150,22 @@ Rectangle {
                         color: pill.modelData.open ? theme.accentForeground : "#c4c4cc"
                     }
                 }
+            }
+            AbstractButton {
+                id: addPill
+                padding: 4
+                leftPadding: 9
+                rightPadding: 9
+                hoverEnabled: true
+                onClicked: sidebar.addUniverse()
+                ToolTip.visible: hovered
+                ToolTip.delay: 600
+                ToolTip.text: qsTr("New universe")
+                background: Rectangle {
+                    radius: Math.min(10, theme.radius + 6)
+                    color: addPill.hovered ? Qt.rgba(1, 1, 1, 0.08) : Qt.rgba(1, 1, 1, 0.04)
+                }
+                contentItem: Label { text: "+"; font.pixelSize: 12; color: "#c4c4cc" }
             }
         }
 

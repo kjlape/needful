@@ -29,7 +29,7 @@ ApplicationWindow {
     // Single-key shortcuts stand down while a dialog is open.
     readonly property bool dialogOpen: helpVisible || editor.visible || completeDialog.visible
                                        || snoozeDialog.visible || contextDialog.visible || confirm.visible
-                                       || logDialog.visible || pairDialog.visible
+                                       || logDialog.visible || pairDialog.visible || universeDialog.visible
 
     readonly property var views: [
         { key: "today", label: qsTr("Today") },
@@ -163,6 +163,10 @@ ApplicationWindow {
                 onRenameContext: c => contextDialog.openForRename(c)
                 onPairComputer: pairDialog.openPair()
                 onJoinComputer: pairDialog.openJoin()
+                onAddUniverse: universeDialog.openForNew()
+                onRemoveUniverse: u => confirm.ask(
+                    qsTr("Stop listing “%1” on this computer? Its data stays, and your paired computers keep it.").arg(u.label),
+                    qsTr("Remove"), () => backend.removeUniverse(u.name))
                 onUnpairComputer: d => confirm.ask(
                     qsTr("Unpair “%1”? It can no longer connect. Its changes stay.").arg(d.name),
                     qsTr("Unpair"), () => peers.unpair(d.id))
@@ -395,6 +399,7 @@ ApplicationWindow {
     PairDialog { id: pairDialog }
     SnoozeDialog { id: snoozeDialog }
     ContextDialog { id: contextDialog }
+    UniverseDialog { id: universeDialog }
 
     Dialog {
         id: confirm

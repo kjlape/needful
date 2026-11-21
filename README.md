@@ -210,6 +210,10 @@ for the house. Yours is always there and is what everything opens on;
 others are one click away in the sidebar (or `U`), so their chores never
 mix into your day.
 
+In the window, add one from the sidebar's ⋯ menu (New universe…) or the
+`+` beside the universes, giving it a sync folder if it should have one.
+Right-click a universe to remove it. From the command line:
+
 ```sh
 needful universe add hers ~/Sync/needful-hers   # join her synced folder
 needful universe add house ~/Sync/needful-house
