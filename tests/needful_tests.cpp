@@ -1612,6 +1612,33 @@ private slots:
         }
     }
 
+    void webApiStampsTheWorkerWithThePageVersion()
+    {
+        QTemporaryDir dir;
+        QTemporaryDir files;
+        QFile worker(files.filePath("sw.js"));
+        QVERIFY(worker.open(QIODevice::WriteOnly));
+        worker.write("const VERSION = \"{{version}}\";");
+        worker.close();
+        auto writePage = [&](const QByteArray &body) {
+            QFile page(files.filePath("app.js"));
+            QVERIFY(page.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            page.write(body);
+        };
+        Backend backend(dir.filePath("needful.json"));
+        WebApi api(&backend, nullptr, files.path());
+        HttpRequest request;
+        request.method = "GET";
+        request.path = "/sw.js";
+
+        writePage("one");
+        const QByteArray first = api.handle(request).body;
+        QVERIFY(!first.contains("{{version}}"));
+        QCOMPARE(api.handle(request).body, first);
+        writePage("two");
+        QVERIFY(api.handle(request).body != first);
+    }
+
     void webApiKeepsToItsFolder()
     {
         QTemporaryDir dir;

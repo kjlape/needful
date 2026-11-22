@@ -1,5 +1,7 @@
 #include "webapi.h"
 
+#include <QCryptographicHash>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QHostAddress>
@@ -104,6 +106,21 @@ HttpResponse WebApi::route(const HttpRequest &request) {
     return HttpResponse::error(404, "Not found");
 }
 
+QByteArray WebApi::pageVersion() const {
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    const QDir dir(m_files);
+    for (const QString &name : dir.entryList(QDir::Files, QDir::Name)) {
+        if (name == "sw.js")
+            continue;
+        QFile file(dir.filePath(name));
+        if (file.open(QIODevice::ReadOnly)) {
+            hash.addData(name.toUtf8());
+            hash.addData(file.readAll());
+        }
+    }
+    return hash.result().toHex().left(12);
+}
+
 HttpResponse WebApi::file(const QString &path) const {
     // Only plain names directly in the folder; nothing climbs out of it.
     static const QRegularExpression name("^/[A-Za-z0-9_-]+(\\.[A-Za-z0-9]+)+$");
@@ -115,6 +132,8 @@ HttpResponse WebApi::file(const QString &path) const {
     HttpResponse response;
     response.contentType = contentType(path);
     response.body = file.readAll();
+    if (path == "/sw.js")
+        response.body.replace("{{version}}", pageVersion());
     return response;
 }
 

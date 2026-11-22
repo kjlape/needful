@@ -71,6 +71,8 @@ const S = {
   notedThisTime: "Noted this time:",
   addNote: "Add a note",
   noteFailed: "Couldn't save the note “%1”.",
+  updateReady: "A new version of Needful is ready.",
+  update: "Update",
   snoozeChoices: [["Tomorrow", 1], ["3 days", 3], ["1 week", 7], ["2 weeks", 14], ["1 month", 30], ["3 months", 91]],
   nextChoices: [["1 week", 7, "d"], ["2 weeks", 14, "d"], ["1 month", 1, "m"], ["3 months", 3, "m"], ["6 months", 6, "m"], ["1 year", 12, "m"]],
 };
@@ -739,15 +741,36 @@ function start() {
   poll();
 }
 
-// A home screen app on iOS comes back to the screen without loading the page
-// again, so it would keep an old version for as long as it stays in memory.
-// Each time it's shown it asks for a newer one, and when one takes over, the
-// page reloads into it, though not while a sheet is open with something
-// half typed: then it waits for the sheet to close.
+// A new version of the page waits until you choose it. Each time the page is
+// shown it asks for a newer one (a home screen app on iOS comes back without
+// loading again), and when one is ready a bar says so. Tapping Update lets
+// the new version take over, and the page reloads into it. If another tab
+// updated first, this one follows, though not while a sheet is open with
+// something half typed: then it waits for the sheet to close.
 let registration = null;
 function watchForUpdates() {
   if (!("serviceWorker" in navigator)) return;
-  navigator.serviceWorker.register("/sw.js").then((r) => { registration = r; }).catch(() => {});
+  const bar = $("#update");
+  bar.querySelector(".update-text").textContent = S.updateReady;
+  const button = bar.querySelector("button");
+  button.textContent = S.update;
+  button.addEventListener("click", () => {
+    if (!registration || !registration.waiting) return;
+    button.disabled = true;
+    registration.waiting.postMessage("update");
+  });
+  const offer = (worker) => {
+    // With no worker in charge yet, this is the first install, not an update.
+    if (worker && navigator.serviceWorker.controller) bar.hidden = false;
+  };
+  navigator.serviceWorker.register("/sw.js").then((r) => {
+    registration = r;
+    offer(r.waiting);
+    r.addEventListener("updatefound", () => {
+      const worker = r.installing;
+      if (worker) worker.addEventListener("statechange", () => { if (worker.state === "installed") offer(worker); });
+    });
+  }).catch(() => {});
   let controlled = !!navigator.serviceWorker.controller;
   let reloading = false;
   const reload = () => {

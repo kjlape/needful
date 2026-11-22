@@ -28,6 +28,9 @@ public:
 private:
     HttpResponse route(const HttpRequest &request);
     HttpResponse file(const QString &path) const;
+    // A fingerprint of the page's files, written into sw.js so the phone
+    // sees a new worker whenever any of them changes.
+    QByteArray pageVersion() const;
     HttpResponse state(const HttpRequest &request);
     HttpResponse taskAction(int id, const QString &action, const QVariantMap &body);
     HttpResponse addTask(const QVariantMap &body);
