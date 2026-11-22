@@ -11,6 +11,8 @@ Rectangle {
 
     readonly property var keys: [
         ["Space", qsTr("Done, with a note")],
+        ["Shift+Space", qsTr("Check the next step")],
+        ["A", qsTr("Add a step for this time")],
         ["T", qsTr("Pull into today, or put back")],
         ["S", qsTr("Snooze")],
         ["Shift+S", qsTr("Skip this time, with why")],

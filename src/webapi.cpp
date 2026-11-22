@@ -97,7 +97,7 @@ HttpResponse WebApi::route(const HttpRequest &request) {
         return addTask(body);
     if (path == "/api/log")
         return addLog(body);
-    static const QRegularExpression actionPath("^/api/task/(\\d+)/(done|skip|today|snooze|unsnooze)$");
+    static const QRegularExpression actionPath("^/api/task/(\\d+)/(done|skip|today|snooze|unsnooze|check|step)$");
     const auto match = actionPath.match(path);
     if (match.hasMatch())
         return taskAction(match.captured(1).toInt(), match.captured(2), body);
@@ -154,6 +154,19 @@ HttpResponse WebApi::taskAction(int id, const QString &action, const QVariantMap
             m_backend->complete(id, body.value("note").toString(), next);
         else
             m_backend->skip(id, body.value("reason").toString(), next);
+    } else if (action == "check") {
+        // The same store call as the window and the command line. Checking a
+        // box already checked is still a yes, so a retried tap is harmless.
+        if (!m_backend->checkStep(id, body.value("step").toInt(), body.value("checked", true).toBool()) &&
+            m_backend->error().isEmpty())
+            return HttpResponse::error(404, "No such step on this task");
+    } else if (action == "step") {
+        if (body.value("text").toString().trimmed().isEmpty())
+            return HttpResponse::error(400, "Say what the step is");
+        const int step = m_backend->addStep(id, body.value("text").toString(), body.value("keep").toBool());
+        if (!step)
+            return HttpResponse::error(500, m_backend->error().isEmpty() ? "Could not add the step" : m_backend->error());
+        return HttpResponse::json(compact({{"ok", true}, {"step", step}, {"task", taskJson(id)}}), 201);
     } else if (action == "today") {
         m_backend->toggleToday(id);
     } else if (action == "snooze") {
@@ -184,6 +197,13 @@ HttpResponse WebApi::addTask(const QVariantMap &body) {
             return HttpResponse::error(400, "due takes a date like 2026-05-01");
         fields["due"] = due;
     }
+    // Steps, one per entry, that stay on its checklist.
+    QVariantList steps;
+    for (const auto &text : body.value("steps").toList())
+        if (!text.toString().trimmed().isEmpty())
+            steps.append(QVariantMap{{"text", text.toString()}});
+    if (!steps.isEmpty())
+        fields["checklist"] = steps;
     // A quick task is one-time unless it says how often.
     const int every = body.value("every").toInt();
     const QString unit = body.value("unit").toString();

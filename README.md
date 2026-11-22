@@ -20,6 +20,14 @@ one is. Pick from the top, and trust that nothing is forgotten.
   own schedule, priority, season, and notes ("Only Tacoma" in the editor).
 - **Today** is the day's inbox. Pull tasks into it with `T`; it starts clean
   every morning, and what's done shows below, crossed off.
+- **Checklists** hold the steps inside a task: oil, filter, reset the
+  reminder. The row shows the next unchecked step and how many are done
+  ("Oil filter · 1/4"), so the list says what to do next. A step added from
+  the task's detail (`A`) is for this time only, like "Buy a cabin filter";
+  one added in the editor stays. A routine's checklist is shared by every
+  copy, each ticked on its own. Done or skipped, the boxes come back
+  unchecked, and history keeps which were checked. Checking boxes never
+  changes how needful a task is.
 - **Snooze** hides a task for a while without pretending it's done.
 - **Skip** passes over one time of a task (it rained, the car was away) and
   moves it on to the next, with why kept in its history.
@@ -36,7 +44,9 @@ one is. Pick from the top, and trust that nothing is forgotten.
 
 | Key | Does |
 | --- | --- |
-| `Space` | Done, with a note |
+| `Space` | Done, with a note (and which steps were left) |
+| `Shift+Space` | Check the next step |
+| `A` | Add a step for this time |
 | `T` | Pull into today, or put back |
 | `S` | Snooze |
 | `Shift+S` | Skip this time, with why |
@@ -65,7 +75,11 @@ needful list [--view needful|today|upcoming|all] [--context "Automotive/White Ho
 needful add "Change the air filter" --context Home --every 1m
 needful add "Mow the lawn" --context Home --every 1w --priority high --months 4-10
 needful add "Oil change" --context CR-V --context Tacoma --context Civic --every 6m
-needful done 3 --note "Mobil 1 5W-20, 84,210 mi"
+needful add "Oil change" --context Tacoma --every 6m --step "6 qt 5W-30" --step "Oil filter"
+needful step 3 "Buy a cabin filter"          # this time only; --keep makes it part of the checklist
+needful step 3                               # list its steps
+needful check 3 1                            # check step 1; --undo unchecks
+needful done 3 --note "Mobil 1 5W-20, 84,210 mi"   # unchecked steps need --yes
 needful skip 5 --reason "Rained all weekend"
 needful log "Squeak from the front left at low speed" --context CR-V --follow-up
 needful history --context "White Honda CR-V" --search oil
@@ -256,7 +270,11 @@ a universe: anyone who has joined it can change anything in it.
 
 `needful serve` runs a small web version for the phone: Today, Needful,
 Upcoming, and History by context, marking things done with a note, pulling
-into today, snoozing, logging a note, and quick tasks. It installs to the home
+into today, snoozing, logging a note, and quick tasks. Checklists work there
+in full: tap a step to check it, add steps for this time as you find them,
+and give a quick task its steps, one per line. A tap shows at once and goes
+to the desktop behind it; if it can't get there, the box goes back and the
+page says so. It installs to the home
 screen as an app. It listens on 127.0.0.1:8787 only, and has no password, so
 Tailscale is how it reaches the phone.
 

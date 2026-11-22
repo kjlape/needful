@@ -19,13 +19,16 @@ constexpr int RecordVersion = 1;
 // the pointer rather than reading it as an empty list.
 constexpr int PointerVersion = 2;
 
-const QStringList Lists{"contexts", "routines", "tasks", "completions", "log"};
+// Steps and checks are records of their own, so ticking different boxes on
+// two machines keeps both.
+const QStringList Lists{"contexts", "routines", "tasks", "completions", "log", "steps", "checks"};
 
 // Fields that name another record, and the list that record is in.
 QString pointsInto(const QString &list, const QString &field) {
     if (field == "context" || (list == "contexts" && field == "parent")) return "contexts";
-    if (list == "tasks" && field == "routine") return "routines";
-    if ((list == "completions" || list == "log") && field == "task") return "tasks";
+    if ((list == "tasks" || list == "steps") && field == "routine") return "routines";
+    if ((list == "completions" || list == "log" || list == "steps" || list == "checks") && field == "task") return "tasks";
+    if (list == "checks" && field == "step") return "steps";
     return {};
 }
 
@@ -692,10 +695,48 @@ Store SyncFolder::combine(const Store &folder, const Store &local, Setup *counts
         out.log.append(copy);
         ++counts->history;
     }
+    // Steps by their text on the same routine or task; checks by their step.
+    QHash<int, int> steps, checks;
+    for (const Step &s : local.steps) {
+        const int routine = routines.value(s.routine, 0), task = s.task ? taskFor(s.task) : 0;
+        if (!routine && !task)
+            continue;
+        int match = 0;
+        for (const Step &there : out.steps)
+            if (there.routine == routine && there.task == task && there.once == s.once && there.text == s.text)
+                match = there.id;
+        if (!match) {
+            Step copy = s;
+            copy.id = match = out.nextId("steps");
+            copy.routine = routine;
+            copy.task = task;
+            out.steps.append(copy);
+        }
+        steps[s.id] = match;
+    }
+    for (const Check &c : local.checks) {
+        const int task = taskFor(c.task), step = steps.value(c.step, 0);
+        if (!task || !step)
+            continue;
+        int match = 0;
+        for (const Check &there : out.checks)
+            if (there.task == task && there.step == step)
+                match = there.id;
+        if (!match) {
+            Check copy = c;
+            copy.id = match = out.nextId("checks");
+            copy.task = task;
+            copy.step = step;
+            out.checks.append(copy);
+        }
+        checks[c.id] = match;
+    }
     if (mapped) {
         (*mapped)["contexts"] = contexts;
         (*mapped)["routines"] = routines;
         (*mapped)["tasks"] = tasks;
+        (*mapped)["steps"] = steps;
+        (*mapped)["checks"] = checks;
     }
     return out;
 }

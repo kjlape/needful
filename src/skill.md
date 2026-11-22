@@ -12,7 +12,8 @@ no display, takes `--json`, exits 0 or 1, and writes errors to stderr.
 - `needful list [--view needful|today|upcoming|all] [--context "Automotive/White Honda CR-V"] --json`
 - `needful add "Change the air filter" --context Home --every 1m [--priority high] [--months 5-9] [--fixed] [--ask] [--due 2026-05-01]`
 - Repeat `--context` to add a routine shared by several contexts (one oil change for every vehicle); each context gets its own copy with its own id, due date, and history.
-- `needful done <id> --note "5W-30, 84,210 miles"` (tasks made with `--ask` also take `--next YYYY-MM-DD`; without it they retire)
+- `needful done <id> --note "5W-30, 84,210 miles"` (tasks made with `--ask` also take `--next YYYY-MM-DD`; without it they retire). A task with unchecked steps refuses without `--yes`; say why in `--note`.
+- Checklists: `needful add ... --step "Oil filter" --step "Reset the reminder"` gives a task its steps. `needful step <id> "Buy a filter"` adds one for this time only (`--keep` makes it part of the checklist; on a routine, every copy's). `needful step <id>` lists them, numbered; `needful check <id> <n> [--undo]` checks one. Task JSON has `steps` (`text`, `checked`, `once`, `shared`), `nextStep`, and `stepsText`; completions have `steps` as they were. Checking steps doesn't change how needful a task is.
 - `needful skip <id> [--reason "Rained out"]` passes over the time it's next due without doing it: history records the skip (`"skipped": true`, the reason as its note) and the task moves to its next time. It takes `--next` like `done`.
 - `needful snooze <id> <days>`, `needful today <id>` (pull into today, or put back)
 - `needful log "Squeak from the front left at low speed" --context CR-V [--follow-up] [--priority high] [--due 2026-05-01]` notes something on a context; `--follow-up` also adds a one-time task to deal with it.

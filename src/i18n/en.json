@@ -14,5 +14,6 @@
   "weeks": { "one": "week", "other": "weeks" },
   "months": { "one": "month", "other": "months" },
   "years": { "one": "year", "other": "years" },
+  "%n steps aren't checked:": { "one": "%n step isn't checked:", "other": "%n steps aren't checked:" },
   "Joined its list. Merged %n tasks that were only here.": { "one": "Joined its list. Merged %n task that was only here.", "other": "Joined its list. Merged %n tasks that were only here." }
 }

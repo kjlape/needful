@@ -99,6 +99,15 @@ ApplicationWindow {
     function snoozeSelected() { if (hasSelection) snoozeDialog.openFor(selected) }
     function skipSelected() { if (hasSelection) completeDialog.openFor(selected, true) }
     function todaySelected() { if (hasSelection) backend.toggleToday(selectedId) }
+    // Shift+Space ticks the next box; A starts typing a step for this time.
+    function checkNextStep() {
+        if (!hasSelection)
+            return
+        const next = (selected.steps || []).find(s => !s.checked)
+        if (next)
+            backend.checkStep(selectedId, next.id, true)
+    }
+    function addStepSelected() { if (hasSelection && detail.visible) detail.addStep() }
     function deleteSelected() {
         if (backend.view === "history" && list.currentIndex >= 0) {
             const entry = backend.items[list.currentIndex]
@@ -119,6 +128,8 @@ ApplicationWindow {
     Shortcut { sequence: "Q"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: Qt.quit() }
     Shortcut { sequences: [StandardKey.Quit, "Ctrl+Q"]; context: Qt.ApplicationShortcut; onActivated: Qt.quit() }
     Shortcut { sequence: "Space"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: win.completeSelected() }
+    Shortcut { sequence: "Shift+Space"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: win.checkNextStep() }
+    Shortcut { sequence: "A"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: win.addStepSelected() }
     Shortcut { sequence: "T"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: win.todaySelected() }
     Shortcut { sequence: "S"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: win.snoozeSelected() }
     Shortcut { sequence: "Shift+S"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: win.skipSelected() }
@@ -434,6 +445,7 @@ ApplicationWindow {
                 onSkipRequested: win.skipSelected()
                 onEditRequested: win.editSelected()
                 onDeleteRequested: win.deleteSelected()
+                onStepsLeft: list.forceActiveFocus()
                 onRemoveCompletion: id => confirm.ask(qsTr("Remove this entry from the history?"),
                                                      qsTr("Remove"), () => backend.removeCompletion(id))
             }

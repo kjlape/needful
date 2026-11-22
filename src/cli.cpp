@@ -111,6 +111,16 @@ QJsonObject taskJson(const QVariantMap &task) {
     return o;
 }
 
+// "6 qt 5W-30 ✓   – Reset the reminder" for a history entry, or empty.
+QString doneStepsLine(const QVariantMap &c) {
+    QStringList parts;
+    for (const auto &value : c["steps"].toList()) {
+        const QVariantMap step = value.toMap();
+        parts.append(QString::fromUtf8(step["checked"].toBool() ? "✓ %1" : "– %1").arg(step["text"].toString()));
+    }
+    return parts.join("  ");
+}
+
 QString taskLine(const QVariantMap &t) {
     QString line = QString("%1  %2").arg(t["id"].toString().rightJustified(4), t["title"].toString());
     if (!t["contextPath"].toString().isEmpty())
@@ -148,8 +158,11 @@ int list(const QStringList &arguments) {
     else if (items.isEmpty())
         print(stdout, "Nothing here.");
     else
-        for (const auto &item : items)
+        for (const auto &item : items) {
             print(stdout, taskLine(item.toMap()));
+            if (const QString steps = item.toMap()["stepsText"].toString(); !steps.isEmpty())
+                print(stdout, "      " + steps);
+        }
     return 0;
 }
 
@@ -164,6 +177,7 @@ int add(const QStringList &arguments) {
     command.parser.addOption({"due", "First due date, YYYY-MM-DD (today by default)", "date"});
     command.parser.addOption({"months", "In season only these months: 5-9, 11-2, or 4,5,6", "months"});
     command.parser.addOption({"notes", "Notes on the task", "text"});
+    command.parser.addOption({"step", "A step of its checklist; give it once for each, in order", "text"});
     command.json();
     command.parser.process(arguments);
     const QString title = command.parser.positionalArguments().mid(1).join(' ').trimmed();
@@ -183,6 +197,12 @@ int add(const QStringList &arguments) {
 
     QVariantMap fields{{"title", title}, {"notes", command.parser.value("notes")}, {"contexts", contexts},
                        {"scheduleKind", "once"}, {"fromDone", !command.parser.isSet("fixed")}};
+    if (command.parser.isSet("step")) {
+        QVariantList steps;
+        for (const QString &text : command.parser.values("step"))
+            steps.append(QVariantMap{{"text", text}});
+        fields["checklist"] = steps;
+    }
     const int priority = priorityFrom(command.parser.value("priority"));
     if (!priority)
         return fail("--priority is low, normal, high, or urgent.");
@@ -242,6 +262,7 @@ int done(const QStringList &arguments) {
     command.parser.addPositionalArgument("task", "The task's number, from needful list", "<task>");
     command.parser.addOption({"note", "What was done, for next time", "text"});
     command.parser.addOption({"next", "For tasks that ask: when it's next due, YYYY-MM-DD", "date"});
+    command.parser.addOption({"yes", "Mark it done even with steps of its checklist not checked"});
     command.json();
     command.parser.process(arguments);
     Backend backend(command.dataPath());
@@ -254,6 +275,16 @@ int done(const QStringList &arguments) {
     if (!next.isEmpty() && !QDate::fromString(next, Qt::ISODate).isValid())
         return fail("--next takes a date like 2026-05-01.");
     const int id = task->id;
+    QStringList unchecked;
+    for (const Step &s : backend.store().checklist(id))
+        if (!backend.store().checked(id, s.id))
+            unchecked.append("  " + s.text);
+    if (!unchecked.isEmpty() && !command.parser.isSet("yes"))
+        return fail(QString("%1:\n%2\nCheck them with needful check %3 <step>, or add --yes to mark it done "
+                            "anyway (--note says why).")
+                        .arg(unchecked.size() == 1 ? QString("1 step isn't checked")
+                                                   : QString("%1 steps aren't checked").arg(unchecked.size()),
+                             unchecked.join('\n'), QString::number(id)));
     backend.complete(id, command.parser.value("note"), next);
     if (!backend.error().isEmpty())
         return fail(backend.error());
@@ -354,13 +385,85 @@ int history(const QStringList &arguments) {
                                                             c["followUpDueText"].toString();
             print(stdout, QString("%1  note: %2%3%4").arg(c["date"].toString(), c["text"].toString(), where, followUp));
         } else {
-            print(stdout, QString("%1  %2%3%4%5").arg(c["date"].toString(), c["skipped"].toBool() ? "skipped: " : "",
-                                                     c["title"].toString(), where,
-                                                   c["note"].toString().isEmpty() ? "" : "\n      " + c["note"].toString()));
+            const QString steps = doneStepsLine(c);
+            print(stdout, QString("%1  %2%3%4%5%6").arg(c["date"].toString(), c["skipped"].toBool() ? "skipped: " : "",
+                                                       c["title"].toString(), where,
+                                                       steps.isEmpty() ? "" : "\n      " + steps,
+                                                       c["note"].toString().isEmpty() ? "" : "\n      " + c["note"].toString()));
         }
     }
     if (command.wantsJson())
         printJson(array);
+    return 0;
+}
+
+// "1. [x] 6 qt 5W-30" for each step, numbered as check takes them.
+void printChecklist(const QVariantMap &task) {
+    const QVariantList steps = task["steps"].toList();
+    if (steps.isEmpty()) {
+        print(stdout, QString("No steps on %1. Add one: needful step %2 \"Buy a filter\"").arg(task["title"].toString(),
+                                                                                             task["id"].toString()));
+        return;
+    }
+    print(stdout, QString("%1  %2").arg(task["title"].toString(), task["stepsText"].toString()));
+    for (int i = 0; i < steps.size(); ++i) {
+        const QVariantMap step = steps[i].toMap();
+        print(stdout, QString("%1. [%2] %3%4").arg(QString::number(i + 1).rightJustified(3), step["checked"].toBool() ? "x" : " ",
+                                                   step["text"].toString(), step["once"].toBool() ? "  (this time)" : ""));
+    }
+}
+
+int step(const QStringList &arguments) {
+    Command command("step", "Add a step to a task's checklist, for this time only unless --keep; with no text, list its steps.");
+    command.parser.addPositionalArgument("task", "The task's number", "<task>");
+    command.parser.addPositionalArgument("text", "The step", "[<text>]");
+    command.parser.addOption({"keep", "Make it part of the checklist, every time (on a routine, for every context)"});
+    command.json();
+    command.parser.process(arguments);
+    Backend backend(command.dataPath());
+    if (!backend.error().isEmpty())
+        return fail(backend.error());
+    const Task *task = taskArgument(command, backend);
+    if (!task)
+        return 1;
+    const int id = task->id;
+    const QString text = command.parser.positionalArguments().mid(2).join(' ').trimmed();
+    if (!text.isEmpty() && !backend.addStep(id, text, command.parser.isSet("keep")))
+        return fail(backend.error().isEmpty() ? "Could not add the step." : backend.error());
+    if (command.wantsJson())
+        printJson(taskJson(backend.task(id)));
+    else
+        printChecklist(backend.task(id));
+    return 0;
+}
+
+int check(const QStringList &arguments) {
+    Command command("check", "Check a step of a task's checklist, by its number in: needful step <task>.");
+    command.parser.addPositionalArgument("task", "The task's number", "<task>");
+    command.parser.addPositionalArgument("step", "The step's number, from 1", "<step>");
+    command.parser.addOption({"undo", "Uncheck it"});
+    command.json();
+    command.parser.process(arguments);
+    Backend backend(command.dataPath());
+    if (!backend.error().isEmpty())
+        return fail(backend.error());
+    const Task *task = taskArgument(command, backend);
+    if (!task)
+        return 1;
+    const int id = task->id;
+    const QList<Step> steps = backend.store().checklist(id);
+    bool ok = false;
+    const int number = command.argument(2).toInt(&ok);
+    if (!ok || number < 1 || number > steps.size())
+        return fail(steps.isEmpty() ? QString("%1 has no steps.").arg(task->title)
+                                    : QString("Say which step, 1 to %1: needful check %2 1").arg(steps.size()).arg(id));
+    backend.checkStep(id, steps[number - 1].id, !command.parser.isSet("undo"));
+    if (!backend.error().isEmpty())
+        return fail(backend.error());
+    if (command.wantsJson())
+        printJson(taskJson(backend.task(id)));
+    else
+        printChecklist(backend.task(id));
     return 0;
 }
 
@@ -1257,6 +1360,8 @@ QString cliSummary() {
            "  add <title> [--every 1w] ...     Add a task\n"
            "  done <task> [--note N]           Mark a task done\n"
            "  skip <task> [--reason R]         Skip this time without doing it\n"
+           "  step <task> [<text>] [--keep]    Add a step to its checklist, or list them\n"
+           "  check <task> <step> [--undo]     Check a step, or uncheck it\n"
            "  snooze <task> <days>             Hide a task for some days\n"
            "  today <task>                     Pull a task into today, or put it back\n"
            "  log <text> [--follow-up]         Note something on a context\n"
@@ -1288,7 +1393,7 @@ QString cliSummary() {
 }
 
 bool isCliCommand(const QString &word) {
-    return QStringList{"list", "add", "done", "skip", "snooze", "today", "log", "history", "contexts", "skill", "serve", "sync", "universe",
+    return QStringList{"list", "add", "done", "skip", "step", "check", "snooze", "today", "log", "history", "contexts", "skill", "serve", "sync", "universe",
                        "help", "--help", "-h", "--version", "-v"}
         .contains(word);
 }
@@ -1303,6 +1408,8 @@ int runCli(const QStringList &arguments) {
            : command == "add"      ? add(arguments)
            : command == "done"     ? done(arguments)
            : command == "skip"     ? skip(arguments)
+           : command == "step"     ? step(arguments)
+           : command == "check"    ? check(arguments)
            : command == "snooze"   ? snooze(arguments)
            : command == "today"    ? today(arguments)
            : command == "log"      ? logNote(arguments)

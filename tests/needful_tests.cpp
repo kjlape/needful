@@ -232,6 +232,244 @@ private slots:
         QVERIFY(backend.store().completions.isEmpty());
     }
 
+    // A checklist on a task of its own: the row shows the next box, done
+    // keeps a snapshot, and the next time starts clean.
+    void checklistsResetAndKeepASnapshot()
+    {
+        Store store;
+        const QDateTime morning(saturday, QTime(8, 0));
+        const int oil = store.addTask(weekly("Oil change", 3, saturday), saturday);
+        store.setChecklist(0, oil, {{0, "6 qt 5W-30"}, {0, " Oil filter "}, {0, ""}, {0, "Reset the reminder"}}, morning);
+        QList<Step> steps = store.checklist(oil);
+        QCOMPARE(steps.size(), 3);
+        QCOMPARE(steps[1].text, QString("Oil filter"));
+        const int found = store.addStep(oil, "Buy a drain plug washer", false, morning.addSecs(1));
+        QVERIFY(found);
+        QVERIFY(!store.addStep(oil, "  ", false, morning));
+        QCOMPARE(store.checklist(oil).last().text, QString("Buy a drain plug washer"));
+        QVERIFY(store.checklist(oil).last().once);
+
+        QVERIFY(store.setChecked(oil, steps[0].id, true, morning.addSecs(2)));
+        QVERIFY(store.setChecked(oil, steps[0].id, true, morning.addSecs(3))); // Twice is once.
+        QCOMPARE(store.checks.size(), 1);
+        QVERIFY(store.setChecked(oil, found, true, morning.addSecs(4)));
+        QVERIFY(!store.setChecked(oil, 999, true, morning));
+        QVERIFY(store.checked(oil, steps[0].id));
+        QVERIFY(!store.checked(oil, steps[1].id));
+        // Checked boxes don't make it any less needful.
+        const double need = store.needfulness(*store.task(oil), saturday);
+        QCOMPARE(store.needfulness(*store.task(oil), saturday), need);
+
+        QVERIFY(store.complete(oil, QDateTime(saturday, QTime(10, 0)), "Reminder button is broken"));
+        const Completion done = store.history(oil).first();
+        QCOMPARE(done.steps.size(), 4);
+        QVERIFY(done.steps[0].checked);
+        QVERIFY(!done.steps[2].checked);
+        QVERIFY(done.steps[3].once && done.steps[3].checked);
+        // Back unchecked, with the step for that time gone.
+        QCOMPARE(store.checklist(oil).size(), 3);
+        QVERIFY(store.checks.isEmpty());
+        QVERIFY(!store.checked(oil, steps[0].id));
+
+        // Changing the checklist later doesn't rewrite the past.
+        store.setChecklist(0, oil, {{steps[0].id, "5 qt 0W-20"}, {steps[2].id, "Reset the reminder"}}, morning);
+        QCOMPARE(store.checklist(oil).size(), 2);
+        QCOMPARE(store.checklist(oil).first().id, steps[0].id);
+        QCOMPARE(store.history(oil).first().steps[0].text, QString("6 qt 5W-30"));
+
+        // A skip keeps them too.
+        store.setChecked(oil, steps[0].id, true, QDateTime(saturday, QTime(11, 0)));
+        store.skip(oil, QDateTime(saturday, QTime(12, 0)), "Car's away");
+        QCOMPARE(store.history(oil).first().steps.size(), 2);
+        QVERIFY(store.checks.isEmpty());
+
+        // It all survives saving; files without checklists stay as they were.
+        Store loaded;
+        QVERIFY(loaded.fromJson(store.toJson()));
+        QCOMPARE(loaded.toJson(), store.toJson());
+        QCOMPARE(loaded.checklist(oil).size(), 2);
+        QCOMPARE(loaded.history(oil).last().steps.size(), 4);
+        Store plain;
+        plain.addTask(weekly("Mow", 2, saturday), saturday);
+        QVERIFY(!plain.toJson().contains("steps"));
+
+        // Deleting the task takes its checklist with it; history stays.
+        store.removeTask(oil);
+        QVERIFY(store.steps.isEmpty());
+        QCOMPARE(store.history(oil).size(), 2);
+    }
+
+    // A routine's checklist is shared by its copies, each ticked on its own;
+    // a copy can add steps of its own after the shared ones.
+    void routineChecklistsAreSharedAndTickedApart()
+    {
+        QTemporaryDir dir;
+        Backend backend(dir.filePath("needful.json"));
+        backend.setToday(saturday);
+        const int tacoma = backend.addContext("Tacoma", 0), crv = backend.addContext("CR-V", 0);
+        const int oil = backend.saveTask({{"title", "Oil change"}, {"contexts", QVariantList{tacoma, crv}},
+                                          {"scheduleKind", "every"}, {"unit", "month"}, {"every", 6},
+                                          {"checklist", QVariantList{"6 qt 5W-30", QVariantMap{{"text", "Oil filter"}}}}});
+        const int routine = backend.store().task(oil)->routine;
+        QVERIFY(routine);
+        int other = 0;
+        for (int id : backend.store().copies(routine))
+            if (id != oil)
+                other = id;
+        QCOMPARE(backend.store().checklist(other).size(), 2);
+        QVERIFY(backend.task(other)["steps"].toList().first().toMap()["shared"].toBool());
+
+        // A step of the copy's own, from the editor, comes after the shared ones.
+        QVariantMap only = backend.task(oil);
+        only["scope"] = "only";
+        only["checklist"] = QVariantList{QVariantMap{{"text", "Skid plate: 10 mm"}}};
+        backend.saveTask(only);
+        QCOMPARE(backend.store().checklist(oil).size(), 3);
+        QCOMPARE(backend.store().checklist(oil).last().text, QString("Skid plate: 10 mm"));
+        QCOMPARE(backend.store().checklist(other).size(), 2);
+
+        const int first = backend.store().checklist(oil).first().id;
+        QVERIFY(backend.checkStep(oil, first, true));
+        QVERIFY(!backend.store().checked(other, first));
+        QVariantMap row = backend.task(oil);
+        QCOMPARE(row["stepsDone"].toInt(), 1);
+        QCOMPARE(row["nextStep"].toString(), QString("Oil filter"));
+        QCOMPARE(row["stepsText"].toString(), QString::fromUtf8("Oil filter · 1/3"));
+
+        // Kept from the detail: on a copy, that's the routine's, for every copy.
+        QVERIFY(backend.addStep(other, "Write down the mileage", true));
+        QCOMPARE(backend.store().checklist(oil).size(), 4);
+        QCOMPARE(backend.store().checklist(oil)[2].text, QString("Write down the mileage"));
+        // For this time only stays on its own copy.
+        const int once = backend.addStep(other, "Buy a filter");
+        QCOMPARE(backend.store().checklist(other).size(), 4);
+        QCOMPARE(backend.store().checklist(oil).size(), 4);
+
+        // A step taken off the routine takes its check with it.
+        QVariantMap all = backend.task(oil);
+        all["scope"] = "all";
+        QVariantList shared;
+        for (const Step &s : backend.store().checklist(oil))
+            if (s.routine && s.id != first)
+                shared.append(QVariantMap{{"id", s.id}, {"text", s.text}});
+        all["checklist"] = shared;
+        all["contexts"] = QVariantList{tacoma, crv};
+        backend.saveTask(all);
+        QCOMPARE(backend.store().checklist(oil).size(), 3);
+        QVERIFY(backend.store().checks.isEmpty());
+
+        // Done with boxes left records what was and wasn't; undo brings the
+        // time back, steps for this time and checks too.
+        backend.checkStep(other, once, true);
+        backend.complete(other, "Out of filters");
+        QCOMPARE(backend.task(other)["history"].toList().first().toMap()["steps"].toList().size(), 3);
+        QVERIFY(backend.store().checks.isEmpty());
+        QCOMPARE(backend.store().checklist(other).size(), 2);
+        backend.undo();
+        QCOMPARE(backend.store().checklist(other).size(), 3);
+        QVERIFY(backend.store().checked(other, once));
+
+        // A skip shows every step as skipped.
+        backend.skip(other, "Sold it");
+        const QVariantList skipped = backend.task(other)["history"].toList().first().toMap()["steps"].toList();
+        QVERIFY(!skipped.isEmpty());
+        for (const auto &step : skipped)
+            QVERIFY(!step.toMap()["checked"].toBool());
+
+        // Searching finds a task by its steps.
+        backend.setSearch("mileage");
+        QCOMPARE(backend.items().size(), 1); // The other copy was skipped, so it's upcoming.
+        backend.setSearch({});
+
+        // A task's own checklist becomes the routine's when it's shared.
+        const int filter = backend.saveTask({{"title", "Cabin filter"}, {"contexts", QVariantList{crv}},
+                                             {"checklist", QVariantList{"Buy a cabin filter", "Swap it in"}}});
+        backend.addStep(filter, "Find the glovebox clips");
+        QVariantMap both = backend.task(filter);
+        both["contexts"] = QVariantList{crv, tacoma};
+        backend.saveTask(both);
+        const int filterRoutine = backend.store().task(filter)->routine;
+        QVERIFY(filterRoutine);
+        int filterCopy = 0;
+        for (int id : backend.store().copies(filterRoutine))
+            if (id != filter)
+                filterCopy = id;
+        QCOMPARE(backend.store().checklist(filterCopy).size(), 2);
+        QCOMPARE(backend.store().checklist(filter).size(), 3);
+    }
+
+    // Ticking different boxes on two machines keeps both; a box ticked on one
+    // while the other finished the task falls to the reset.
+    void syncKeepsChecksFromBothMachines()
+    {
+        QTemporaryDir dir;
+        const QString aData = dir.filePath("a.json"), bData = dir.filePath("b.json");
+        const QString aFolder = dir.filePath("a-sync"), bFolder = dir.filePath("b-sync");
+        int oil = 0, hardware = 0;
+        {
+            Backend a(aData);
+            a.setToday(saturday);
+            oil = a.saveTask({{"title", "Oil change"}, {"scheduleKind", "every"}, {"unit", "month"},
+                              {"checklist", QVariantList{"Oil", "Filter", "Reminder"}}});
+            hardware = a.saveTask({{"title", "Hardware store"}, {"scheduleKind", "once"},
+                                   {"checklist", QVariantList{"Screws", "Caulk"}}});
+        }
+        SyncFolder::Setup setup;
+        QString error;
+        QVERIFY(SyncFolder::setup(aData, aFolder, "desktop", QDateTime(saturday, QTime(12, 0)), &setup, &error));
+        syncTool(aFolder, bFolder);
+        QVERIFY(SyncFolder::setup(bData, bFolder, "laptop", QDateTime(saturday, QTime(12, 0)), &setup, &error));
+        Backend a(aData), b(bData);
+        a.setToday(saturday);
+        b.setToday(saturday);
+        const QList<Step> oilSteps = a.store().checklist(oil), shopping = a.store().checklist(hardware);
+        QCOMPARE(b.store().checklist(oil).size(), 3);
+
+        a.checkStep(hardware, shopping[0].id, true);
+        b.checkStep(hardware, shopping[1].id, true);
+        b.addStep(hardware, "Sandpaper");
+        // The laptop ticks a box after the desktop finished, before hearing of it.
+        a.complete(oil, "Done at the shop");
+        b.setToday(saturday.addDays(1));
+        b.checkStep(oil, oilSteps[0].id, true);
+
+        syncTool(aFolder, bFolder);
+        b.setToday(saturday);
+        QTRY_COMPARE(a.store().toJson(), b.store().toJson());
+        QVERIFY(a.store().checked(hardware, shopping[0].id));
+        QVERIFY(a.store().checked(hardware, shopping[1].id));
+        QCOMPARE(a.store().checklist(hardware).size(), 3);
+        QVERIFY(a.task(oil)["history"].toList().first().toMap()["steps"].toList().first().toMap()["checked"] == false);
+        QVERIFY(!a.store().checked(oil, oilSteps[0].id));
+    }
+
+    // Joining a folder where the same task already has its checklist
+    // doesn't double the steps, and keeps what was ticked.
+    void syncSetupJoinsChecklistsWithoutDoubling()
+    {
+        QTemporaryDir dir;
+        const QString aData = dir.filePath("a.json"), bData = dir.filePath("b.json"), folder = dir.filePath("sync");
+        for (const QString &data : {aData, bData}) {
+            Backend machine(data);
+            machine.setToday(saturday);
+            const int oil = machine.saveTask({{"title", "Oil change"}, {"checklist", QVariantList{"Oil", "Filter"}}});
+            if (data == bData) {
+                machine.addStep(oil, "Buy a filter");
+                machine.checkStep(oil, machine.store().checklist(oil).first().id, true);
+            }
+        }
+        SyncFolder::Setup setup;
+        QString error;
+        QVERIFY2(SyncFolder::setup(aData, folder, "desktop", QDateTime(saturday, QTime(12, 0)), &setup, &error), qPrintable(error));
+        QVERIFY2(SyncFolder::setup(bData, folder, "laptop", QDateTime(saturday, QTime(12, 0)), &setup, &error), qPrintable(error));
+        Backend joined(bData);
+        const int oil = taskNamed(joined.store(), "Oil change");
+        const QList<Step> steps = joined.store().checklist(oil);
+        QCOMPARE(steps.size(), 3);
+        QVERIFY(joined.store().checked(oil, steps.first().id));
+        QCOMPARE(Backend(aData).store().toJson(), joined.store().toJson());
+    }
+
     void contextsNestAndFilter()
     {
         Store store;
@@ -940,6 +1178,36 @@ private slots:
         QCOMPARE(universes.list().size(), 2);
     }
 
+    void commandLineChecklists()
+    {
+        QTemporaryDir dir;
+        const QString data = dir.filePath("needful.json");
+        QCOMPARE(runCli({"needful", "add", "Oil change", "--every", "6m", "--step", "6 qt 5W-30", "--step", "Oil filter",
+                         "--data", data}), 0);
+        const int oil = taskNamed(Backend(data).store(), "Oil change");
+        const QString id = QString::number(oil);
+        QCOMPARE(Backend(data).store().checklist(oil).size(), 2);
+        QCOMPARE(runCli({"needful", "step", id, "Buy a filter", "--data", data}), 0);
+        QCOMPARE(runCli({"needful", "step", id, "Reset the reminder", "--keep", "--data", data}), 0);
+        QCOMPARE(runCli({"needful", "step", id, "--data", data}), 0);
+        QList<Step> steps = Backend(data).store().checklist(oil);
+        QCOMPARE(steps.size(), 4);
+        QVERIFY(!steps[2].once);
+        QVERIFY(steps[3].once);
+        QCOMPARE(runCli({"needful", "check", id, "1", "--data", data}), 0);
+        QVERIFY(Backend(data).store().checked(oil, steps[0].id));
+        QCOMPARE(runCli({"needful", "check", id, "1", "--undo", "--data", data}), 0);
+        QVERIFY(!Backend(data).store().checked(oil, steps[0].id));
+        QCOMPARE(runCli({"needful", "check", id, "9", "--data", data}), 1);
+        // Unchecked boxes need --yes.
+        QCOMPARE(runCli({"needful", "done", id, "--data", data}), 1);
+        QVERIFY(Backend(data).store().history(oil).isEmpty());
+        QCOMPARE(runCli({"needful", "done", id, "--yes", "--note", "Reminder is broken", "--data", data}), 0);
+        QCOMPARE(Backend(data).store().history(oil).first().steps.size(), 4);
+        QCOMPARE(Backend(data).store().checklist(oil).size(), 3);
+        QCOMPARE(runCli({"needful", "history", "--data", data}), 0);
+    }
+
     void httpParsesSplitRequests()
     {
         HttpRequestParser parser;
@@ -1053,6 +1321,30 @@ private slots:
         QCOMPARE(backend.store().task(washed)->schedule.kind, Schedule::Once);
         QCOMPARE(backend.store().task(washed)->context, home);
         QCOMPARE(call("POST", "/api/tasks", "{\"title\":\"\"}").status, 400);
+
+        // Checklists: steps on a quick task, adding one for this time, and ticking.
+        const HttpResponse shop = call("POST", "/api/tasks", "{\"title\":\"Hardware store\",\"steps\":[\"Screws\",\" \",\"Caulk\"]}");
+        QCOMPARE(shop.status, 201);
+        const int store = json(shop).value("id").toInt();
+        QCOMPARE(backend.store().checklist(store).size(), 2);
+        const HttpResponse stepAdded = call("POST", QString("/api/task/%1/step").arg(store), "{\"text\":\"Sandpaper\"}");
+        QCOMPARE(stepAdded.status, 201);
+        const int sandpaper = json(stepAdded).value("step").toInt();
+        QCOMPARE(json(stepAdded).value("task").toObject().value("steps").toArray().size(), 3);
+        QCOMPARE(call("POST", QString("/api/task/%1/step").arg(store), "{\"text\":\"\"}").status, 400);
+        const QByteArray tick = "{\"step\":" + QByteArray::number(sandpaper) + ",\"checked\":true}";
+        QCOMPARE(call("POST", QString("/api/task/%1/check").arg(store), tick).status, 200);
+        QCOMPARE(call("POST", QString("/api/task/%1/check").arg(store), tick).status, 200); // A retried tap.
+        QVERIFY(backend.store().checked(store, sandpaper));
+        const QJsonObject listed = json(call("GET", "/api/state?view=needful")).value("items").toArray().last().toObject();
+        QCOMPARE(listed.value("stepsText").toString(), QString::fromUtf8("Screws · 1/3"));
+        QCOMPARE(call("POST", QString("/api/task/%1/check").arg(store), "{\"step\":999}").status, 404);
+        QCOMPARE(call("POST", QString("/api/task/%1/check").arg(store),
+                      "{\"step\":" + QByteArray::number(sandpaper) + ",\"checked\":false}").status, 200);
+        QVERIFY(!backend.store().checked(store, sandpaper));
+        QCOMPARE(call("POST", QString("/api/task/%1/done").arg(store), "{\"note\":\"Out of caulk\"}").status, 200);
+        QCOMPARE(json(call("GET", QString("/api/task/%1").arg(store))).value("history").toArray().first().toObject()
+                     .value("steps").toArray().size(), 3);
 
         QCOMPARE(call("POST", "/api/log", "{\"context\":1,\"text\":\"Squeak\",\"followUp\":true}").status, 201);
         QCOMPARE(call("POST", "/api/log", "{\"text\":\"  \"}").status, 400);

@@ -16,6 +16,8 @@ Dialog {
     property var task: ({})
     property bool skipping: false
     readonly property bool asks: task.scheduleKind === "ask"
+    // Done with boxes left: say which, and ask to confirm.
+    readonly property var unchecked: skipping ? [] : (task.steps || []).filter(s => !s.checked)
 
     function openFor(t, skip) {
         task = t
@@ -40,12 +42,36 @@ Dialog {
         width: parent.width
         spacing: 12
 
+        ColumnLayout {
+            visible: dialog.unchecked.length > 0
+            Layout.fillWidth: true
+            spacing: 2
+            Label {
+                text: qsTr("%n steps aren't checked:", "", dialog.unchecked.length)
+                color: theme.accent
+                Layout.fillWidth: true
+            }
+            Repeater {
+                model: dialog.unchecked
+                Label {
+                    required property var modelData
+                    text: "– " + modelData.text
+                    color: "#c4c4cc"
+                    wrapMode: Text.Wrap
+                    leftPadding: 12
+                    Layout.fillWidth: true
+                }
+            }
+        }
+
         TextArea {
             id: note
             Layout.fillWidth: true
             Layout.minimumHeight: 90
             wrapMode: TextEdit.Wrap
-            placeholderText: dialog.skipping ? qsTr("Why skip it this time? (optional)") : qsTr("Note for next time (optional)")
+            placeholderText: dialog.skipping ? qsTr("Why skip it this time? (optional)")
+                           : dialog.unchecked.length > 0 ? qsTr("Why they weren't done (optional)")
+                           : qsTr("Note for next time (optional)")
             // Enter finishes; Shift+Enter starts a new line.
             Keys.onReturnPressed: event => {
                 if (event.modifiers & Qt.ShiftModifier)
@@ -86,6 +112,10 @@ Dialog {
 
     footer: DialogButtonBox {
         Button { text: qsTr("Cancel"); flat: true; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
-        Button { text: dialog.skipping ? qsTr("Skip") : qsTr("Done"); highlighted: true; onClicked: dialog.finish() }
+        Button {
+            text: dialog.skipping ? qsTr("Skip") : dialog.unchecked.length > 0 ? qsTr("Done anyway") : qsTr("Done")
+            highlighted: true
+            onClicked: dialog.finish()
+        }
     }
 }

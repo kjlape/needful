@@ -112,6 +112,8 @@ main {
 .section { margin: 20px 12px 6px; font-size: 14px; font-weight: 600; color: var(--dim); }
 .empty { margin: 60px 24px; text-align: center; color: #6e6e78; }
 .row.history .row-title { white-space: normal; }
+.row-step { display: block; font-size: 14px; color: var(--soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-steps { display: block; font-size: 13px; color: var(--dim); margin-top: 2px; white-space: pre-wrap; }
 .done-today .row-title { text-decoration: line-through; color: #9a9aa3; }
 
 .tabs {
@@ -217,6 +219,26 @@ form .check input { width: 22px; min-height: 22px; accent-color: var(--accent); 
 .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .segmented { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 6px; }
 
+.checklist { margin: 12px 0 4px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.step, .add-step {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; padding: 8px 14px;
+  background: none; border: 0; border-bottom: 1px solid var(--line); text-align: left; font-size: 16px;
+}
+.step:active { background: var(--raised); }
+.step .box, .add-step .box {
+  flex: none; width: 24px; height: 24px; border-radius: 50%; border: 2px solid var(--faint);
+  display: grid; place-items: center; font-size: 15px; font-weight: 700;
+}
+.step[aria-checked="true"] .box { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+.step[aria-checked="true"] .box::after { content: "✓"; }
+.step[aria-checked="true"] .step-text { color: var(--dim); text-decoration: line-through; }
+.step-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.add-step { margin: 0; border-bottom: 0; display: flex; }
+.add-step .box.add { border-style: dashed; color: var(--dim); }
+.add-step input { flex: 1; min-width: 0; min-height: 36px; padding: 0; background: none; border: 0; outline: none; font-size: 16px; }
+.steps-left { color: var(--accent-text); font-size: 15px; }
+.steps-left p { margin: 0 0 4px; }
+.steps-left ul { margin: 0; padding-left: 20px; color: var(--soft); }
 .history-list { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 12px; }
 .history-list h3 { margin: 0 0 8px; font-size: 15px; color: var(--soft); }
 .history-entry { padding: 6px 0; }

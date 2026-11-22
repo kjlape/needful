@@ -58,6 +58,14 @@ const S = {
   offline: "Can't reach Needful. Is the server running?",
   failed: "That didn't work: %1",
   logUnavailable: "This server's Needful is too old to keep a log.",
+  addStep: "Add a step for this time",
+  thisTime: "This time",
+  stepsField: "Steps, one per line (optional)",
+  stepsLeft: (n) => n === 1 ? "1 step isn't checked:" : n + " steps aren't checked:",
+  whyNot: "Why they weren't done (optional)",
+  doneAnyway: "Done anyway",
+  checkFailed: "Couldn't reach Needful, so “%1” is back how it was.",
+  stepFailed: "Couldn't add “%1”.",
   snoozeChoices: [["Tomorrow", 1], ["3 days", 3], ["1 week", 7], ["2 weeks", 14], ["1 month", 30], ["3 months", 91]],
   nextChoices: [["1 week", 7, "d"], ["2 weeks", 14, "d"], ["1 month", 1, "m"], ["3 months", 3, "m"], ["6 months", 6, "m"], ["1 year", 12, "m"]],
 };
@@ -112,6 +120,39 @@ async function api(path, body) {
     throw error;
   }
   return data;
+}
+
+// Changes go to the desktop one at a time, in the order they were made, so
+// quick taps can't arrive out of order and a done arrives after the checks
+// before it.
+let queue = Promise.resolve();
+function send(work) {
+  const sent = queue.then(work);
+  queue = sent.catch(() => {});
+  return sent;
+}
+
+// Checks still on their way, by "task:step", and what they'll set. Until the
+// desktop answers, a refresh shows the tap, not what the desktop last said.
+const pending = new Map();
+const stepKey = (taskId, stepId) => taskId + ":" + stepId;
+function shownChecked(taskId, step) {
+  const key = stepKey(taskId, step.id);
+  return pending.has(key) ? pending.get(key) : step.checked;
+}
+
+// "Buy a cabin filter · 0/2", or "2/2" once every box is ticked.
+function stepsSummary(task) {
+  const steps = task.steps || [];
+  if (!steps.length) return "";
+  const ticked = steps.filter((s) => shownChecked(task.id, s)).length;
+  const next = steps.find((s) => !shownChecked(task.id, s));
+  return (next ? next.text + " · " : "") + ticked + "/" + steps.length;
+}
+
+// "✓ 6 qt 5W-30  – Reset the reminder" for a completion.
+function doneSteps(entry) {
+  return (entry.steps || []).map((s) => (s.checked ? "✓ " : "– ") + s.text).join("   ");
 }
 
 let toastTimer = null;
@@ -198,6 +239,7 @@ function taskRow(task) {
     h("span", { class: "row-body" },
       h("span", { class: "row-title" }, task.title,
         task.today && app.view !== "today" ? h("span", { class: "badge", text: S.today }) : null),
+      (task.steps || []).length ? h("span", { class: "row-step", text: stepsSummary(task) }) : null,
       h("span", { class: "row-meta", text: [task.contextPath, task.lastDone].filter(Boolean).join(" · ") })),
     h("span", { class: "row-when" + (late ? (task.priority >= 4 ? " urgent" : " late") : ""), text: task.dueText }));
 }
@@ -215,6 +257,8 @@ function historyRow(item, extra) {
         isLog && item.task ? h("span", { class: "badge",
           text: item.followUpDone ? S.followedUp : S.followUpDue.replace("%1", item.followUpDueText || "") }) : null),
       item.contextPath ? h("span", { class: "row-meta", text: item.contextPath }) : null,
+      !isLog && extra !== "done-today" && (item.steps || []).length
+        ? h("span", { class: "row-steps", text: doneSteps(item) }) : null,
       text ? h("span", { class: "row-note", text }) : null),
     h("span", { class: "row-when", text: extra === "done-today" ? item.time : item.date }));
 }
@@ -246,6 +290,7 @@ async function openTask(id) {
   let task;
   try { task = await api("/api/task/" + id); } catch (error) { toast(S.failed.replace("%1", error.message)); return; }
   const sheet = $("#task-sheet");
+  sheet.stepsChanged = null;
   const close = () => sheet.close();
 
   const chips = h("div", { class: "chips" },
@@ -257,6 +302,7 @@ async function openTask(id) {
     task.copies.map((c) => h("div", {}, h("span", { text: c.contextPath }), h("span", { text: c.dueText })))) : null;
 
   const snoozed = task.state === "snoozed";
+  const steps = checklist(task, sheet);
   const actions = h("div", { class: "actions" },
     h("button", { type: "button", class: "btn primary", text: S.done, onclick: () => showDone(task) }),
     h("button", {
@@ -275,6 +321,7 @@ async function openTask(id) {
       ? task.history.slice(0, 8).map((entry) => h("div", { class: "history-entry" },
           h("b", { text: entry.date }), " ", h("span", { class: "dim", text: entry.ago }),
           entry.skipped ? h("span", { class: "badge", text: S.skippedMark }) : null,
+          (entry.steps || []).length ? h("div", { class: "row-steps", text: doneSteps(entry) }) : null,
           entry.note ? h("div", { class: "notes", text: entry.note }) : null))
       : h("p", { class: "dim", text: S.notDoneYet }));
 
@@ -285,8 +332,87 @@ async function openTask(id) {
     task.sharedNotes ? h("p", { class: "notes", text: task.sharedNotes }) : null,
     task.notes ? h("p", { class: "notes", text: task.notes }) : null,
     also,
+    steps,
     h("div", { id: "task-panel" }, actions),
     history);
+}
+
+// The steps, each a big row: one tap checks, another unchecks, with no
+// save. The box changes at once and the check goes out behind it; if it
+// doesn't arrive, the box goes back and a toast says so.
+function checklist(task, sheet) {
+  for (const step of task.steps || []) {
+    step.shown = shownChecked(task.id, step);
+    step.confirmed = step.checked;
+  }
+  const changed = () => { if (sheet.stepsChanged) sheet.stepsChanged(); };
+
+  function row(step) {
+    const box = h("button", { type: "button", class: "step", role: "checkbox" },
+      h("span", { class: "box", "aria-hidden": "true" }),
+      h("span", { class: "step-text", text: step.text }),
+      step.once ? h("span", { class: "badge", text: S.thisTime }) : null);
+    const show = (on) => {
+      step.shown = on;
+      box.setAttribute("aria-checked", on ? "true" : "false");
+    };
+    show(step.shown);
+    box.addEventListener("click", () => {
+      const want = !step.shown;
+      show(want);
+      changed();
+      const token = {};
+      step.token = token;
+      let key = null;
+      send(async () => {
+        key = stepKey(task.id, step.id);
+        pending.set(key, want);
+        await api("/api/task/" + task.id + "/check", { step: step.id, checked: want });
+      }).then(() => {
+        step.confirmed = want;
+        if (step.token === token) pending.delete(key);
+        if (!pending.size) refresh();
+      }, () => {
+        if (step.token !== token) return;
+        pending.delete(key);
+        show(step.confirmed);
+        changed();
+        toast(S.checkFailed.replace("%1", step.text));
+        render();
+      });
+    });
+    return box;
+  }
+
+  const list = h("div", { class: "steps" }, (task.steps || []).map(row));
+  // Enter adds the step and keeps the keyboard up for the next one.
+  const field = h("input", { type: "text", name: "step", placeholder: S.addStep, enterkeyhint: "done",
+                             autocomplete: "off", "aria-label": S.addStep });
+  const form = h("form", {
+    class: "add-step",
+    onsubmit: (event) => {
+      event.preventDefault();
+      const text = field.value.trim();
+      if (!text) return;
+      field.value = "";
+      field.focus();
+      const step = { id: 0, text, once: true, checked: false, shown: false, confirmed: false };
+      (task.steps = task.steps || []).push(step);
+      const added = row(step);
+      list.append(added);
+      changed();
+      send(() => api("/api/task/" + task.id + "/step", { text })).then((reply) => {
+        step.id = reply.step;
+        if (!pending.size) refresh();
+      }, () => {
+        added.remove();
+        task.steps.splice(task.steps.indexOf(step), 1);
+        changed();
+        toast(S.stepFailed.replace("%1", text));
+      });
+    },
+  }, h("span", { class: "box add", "aria-hidden": "true", text: "+" }), field);
+  return h("div", { class: "checklist" }, list, form);
 }
 
 function showSnooze(task) {
@@ -304,6 +430,18 @@ function showDone(task, skipping) {
   const sheet = $("#task-sheet");
   const asks = task.scheduleKind === "ask";
   const note = h("textarea", { name: "note", rows: "3", placeholder: skipping ? S.reason : S.note });
+  // Done with boxes left says which, and asks to confirm, as it changes.
+  const warning = h("div", { class: "steps-left" });
+  const submit = h("button", { type: "submit", class: "btn primary" });
+  sheet.stepsChanged = () => {
+    const left = skipping ? [] : (task.steps || []).filter((s) => !s.shown);
+    warning.hidden = !left.length;
+    warning.replaceChildren(h("p", { text: S.stepsLeft(left.length) }),
+      h("ul", {}, left.map((s) => h("li", { text: s.text }))));
+    submit.textContent = skipping ? S.skipIt : left.length ? S.doneAnyway : S.markDone;
+    if (!skipping) note.placeholder = left.length ? S.whyNot : S.note;
+  };
+  sheet.stepsChanged();
   let next = after(1, "m");
   const nextField = h("input", { type: "date", name: "next", value: next });
   nextField.addEventListener("change", () => { next = nextField.value; mark(); });
@@ -330,11 +468,14 @@ function showDone(task, skipping) {
       sheet.close();
       const nextDue = asks && !notAgain.checked ? next : "";
       if (skipping)
-        act(api("/api/task/" + task.id + "/skip", { reason: note.value, next: nextDue }), S.markedSkipped.replace("%1", task.title));
+        act(send(() => api("/api/task/" + task.id + "/skip", { reason: note.value, next: nextDue })),
+            S.markedSkipped.replace("%1", task.title));
       else
-        act(api("/api/task/" + task.id + "/done", { note: note.value, next: nextDue }), S.markedDone.replace("%1", task.title));
+        act(send(() => api("/api/task/" + task.id + "/done", { note: note.value, next: nextDue })),
+            S.markedDone.replace("%1", task.title));
     },
   },
+  warning,
   note,
   asks
     ? [h("label", {}, S.comeBack, h("div", { class: "choices" }, choiceButtons), nextField),
@@ -343,7 +484,7 @@ function showDone(task, skipping) {
                                    : task.scheduleKind === "once" ? S.doneForGood
                                    : S.comesBack.replace("%1", (task.scheduleText || "").toLowerCase()) }),
   h("div", { class: "actions" },
-    h("button", { type: "submit", class: "btn primary", text: skipping ? S.skipIt : S.markDone }),
+    submit,
     h("button", { type: "button", class: "btn quiet", text: S.cancel, onclick: () => openTask(task.id) })));
 
   $("#task-panel").replaceChildren(form);
@@ -416,16 +557,20 @@ function taskForm(sheet) {
   const context = contextSelect("context");
   const priority = prioritySelect();
   const due = h("input", { type: "date", name: "due", value: app.state.today });
+  const steps = h("textarea", { name: "steps", rows: "3", placeholder: S.stepsField });
   return h("form", {
     onsubmit: (event) => {
       event.preventDefault();
       if (!title.value.trim()) return;
       sheet.close();
       const contexts = Number(context.value) ? [Number(context.value)] : [];
-      act(api("/api/tasks", { title: title.value, contexts, priority: Number(priority.value), due: due.value }), S.added);
+      const list = steps.value.split("\n").map((s) => s.trim()).filter(Boolean);
+      act(api("/api/tasks", { title: title.value, contexts, priority: Number(priority.value), due: due.value, steps: list }),
+          S.added);
     },
   },
   title,
+  steps,
   h("label", {}, S.context, context),
   h("div", { class: "row-2" }, h("label", {}, S.priority, priority), h("label", {}, S.due, due)),
   h("div", { class: "actions" },

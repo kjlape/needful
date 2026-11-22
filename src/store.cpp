@@ -6,6 +6,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSaveFile>
+#include <QSet>
 #include <algorithm>
 
 namespace {
@@ -21,7 +22,7 @@ template <typename T> int highestId(const QList<T> &items) {
     return highest;
 }
 
-QDate step(const QDate &date, int every, const QString &unit) {
+QDate stepDate(const QDate &date, int every, const QString &unit) {
     if (unit == "day") return date.addDays(every);
     if (unit == "month") return date.addMonths(every);
     if (unit == "year") return date.addYears(every);
@@ -63,7 +64,7 @@ bool Store::save(const QString &path, QString *error) const {
 }
 
 QByteArray Store::toJson() const {
-    QJsonArray contextArray, routineArray, taskArray, completionArray, logArray;
+    QJsonArray contextArray, routineArray, taskArray, completionArray, logArray, stepArray, checkArray;
     static const char *kinds[] = {"once", "every", "ask"};
     auto scheduleJson = [](const Schedule &s) {
         return QJsonObject{{"kind", kinds[s.kind]}, {"every", s.every}, {"unit", s.unit}, {"fromDone", s.fromDone}};
@@ -96,6 +97,7 @@ QByteArray Store::toJson() const {
             {"today", dateText(t.today)},
             {"archived", t.archived},
             {"created", dateText(t.created)},
+            {"round", t.round},
         });
     }
     for (const auto &c : completions) {
@@ -108,6 +110,16 @@ QByteArray Store::toJson() const {
         // Only on skips, so the many completions from before skipping stay as they were.
         if (c.skipped)
             done["skipped"] = true;
+        if (!c.steps.isEmpty()) {
+            QJsonArray steps;
+            for (const DoneStep &s : c.steps) {
+                QJsonObject step{{"text", s.text}, {"checked", s.checked}};
+                if (s.once)
+                    step["once"] = true;
+                steps.append(step);
+            }
+            done["steps"] = steps;
+        }
         completionArray.append(done);
     }
     for (const auto &e : log)
@@ -116,12 +128,29 @@ QByteArray Store::toJson() const {
                                     {"at", e.at.toString(Qt::ISODateWithMs)},
                                     {"text", e.text},
                                     {"task", e.task}});
+    for (const auto &s : steps)
+        stepArray.append(QJsonObject{{"id", s.id},
+                                     {"routine", s.routine},
+                                     {"task", s.task},
+                                     {"text", s.text},
+                                     {"position", s.position},
+                                     {"once", s.once},
+                                     {"at", s.at.toString(Qt::ISODateWithMs)},
+                                     {"round", s.round}});
+    for (const auto &c : checks)
+        checkArray.append(QJsonObject{
+            {"id", c.id}, {"task", c.task}, {"step", c.step}, {"at", c.at.toString(Qt::ISODateWithMs)}, {"round", c.round}});
     QJsonObject root{{"needful", FormatVersion},
                      {"contexts", contextArray},
                      {"routines", routineArray},
                      {"tasks", taskArray},
                      {"completions", completionArray},
                      {"log", logArray}};
+    // Only once there are any, so files from before checklists stay as they were.
+    if (!stepArray.isEmpty())
+        root["steps"] = stepArray;
+    if (!checkArray.isEmpty())
+        root["checks"] = checkArray;
     if (!reserved.isEmpty()) {
         QJsonObject highest;
         for (auto it = reserved.begin(); it != reserved.end(); ++it)
@@ -194,14 +223,30 @@ bool Store::fromJson(const QByteArray &json, QString *error) {
         t.today = readDate(o.value("today"));
         t.archived = o.value("archived").toBool();
         t.created = readDate(o.value("created"));
+        t.round = std::max(0, o.value("round").toInt());
         loaded.tasks.append(t);
     }
     for (const auto &value : root.value("completions").toArray()) {
         const QJsonObject o = value.toObject();
-        loaded.completions.append({o.value("id").toInt(), o.value("task").toInt(), o.value("title").toString(),
-                                   o.value("context").toInt(),
-                                   QDateTime::fromString(o.value("at").toString(), Qt::ISODate),
-                                   o.value("note").toString(), o.value("skipped").toBool()});
+        Completion c{o.value("id").toInt(), o.value("task").toInt(), o.value("title").toString(),
+                     o.value("context").toInt(), QDateTime::fromString(o.value("at").toString(), Qt::ISODate),
+                     o.value("note").toString(), o.value("skipped").toBool()};
+        for (const auto &step : o.value("steps").toArray()) {
+            const QJsonObject s = step.toObject();
+            c.steps.append({s.value("text").toString(), s.value("checked").toBool(), s.value("once").toBool()});
+        }
+        loaded.completions.append(c);
+    }
+    for (const auto &value : root.value("steps").toArray()) {
+        const QJsonObject o = value.toObject();
+        loaded.steps.append({o.value("id").toInt(), o.value("routine").toInt(), o.value("task").toInt(),
+                             o.value("text").toString(), o.value("position").toInt(), o.value("once").toBool(),
+                             QDateTime::fromString(o.value("at").toString(), Qt::ISODate), o.value("round").toInt()});
+    }
+    for (const auto &value : root.value("checks").toArray()) {
+        const QJsonObject o = value.toObject();
+        loaded.checks.append({o.value("id").toInt(), o.value("task").toInt(), o.value("step").toInt(),
+                              QDateTime::fromString(o.value("at").toString(), Qt::ISODate), o.value("round").toInt()});
     }
     for (const auto &value : root.value("log").toArray()) {
         const QJsonObject o = value.toObject();
@@ -223,6 +268,8 @@ int Store::nextId(const QString &list) const {
     else if (list == "tasks") highest = std::max(highest, highestId(tasks));
     else if (list == "completions") highest = std::max(highest, highestId(completions));
     else if (list == "log") highest = std::max(highest, highestId(log));
+    else if (list == "steps") highest = std::max(highest, highestId(steps));
+    else if (list == "checks") highest = std::max(highest, highestId(checks));
     return highest + 1;
 }
 
@@ -369,12 +416,12 @@ QDate Store::nextDue(const Task &task, const QDate &done) const {
         return {};
     const Schedule &s = task.schedule;
     if (s.fromDone || !task.due.isValid())
-        return step(done, s.every, s.unit);
+        return stepDate(done, s.every, s.unit);
     // A fixed rhythm skips the dates already behind us, and always moves on
     // at least once, so doing it early still counts for this time.
-    QDate next = step(task.due, s.every, s.unit);
+    QDate next = stepDate(task.due, s.every, s.unit);
     for (int i = 0; next <= done && i < 100000; ++i)
-        next = step(next, s.every, s.unit);
+        next = stepDate(next, s.every, s.unit);
     return next;
 }
 
@@ -385,7 +432,7 @@ QDate Store::afterSkip(const Task &task, const QDate &today) const {
     if (task.schedule.kind != Schedule::Every)
         return {};
     const QDate from = task.due.isValid() ? std::max(task.due, today) : today;
-    return task.schedule.fromDone ? step(from, task.schedule.every, task.schedule.unit) : nextDue(task, from);
+    return task.schedule.fromDone ? stepDate(from, task.schedule.every, task.schedule.unit) : nextDue(task, from);
 }
 
 int Store::addTask(Task task, const QDate &today) {
@@ -431,8 +478,12 @@ bool Store::removeTask(int id) {
         return false;
     const int routineId = t->routine;
     tasks.removeIf([id](const Task &t) { return t.id == id; });
-    if (routineId && copies(routineId).isEmpty())
+    steps.removeIf([id](const Step &s) { return s.task == id; });
+    checks.removeIf([id](const Check &c) { return c.task == id; });
+    if (routineId && copies(routineId).isEmpty()) {
         routines.removeIf([routineId](const Routine &r) { return r.id == routineId; });
+        removeOrphanSteps();
+    }
     return true;
 }
 
@@ -448,6 +499,12 @@ int Store::makeRoutine(int taskId) {
     t->routine = r.id;
     t->notes.clear();
     t->overrides.clear();
+    // Its checklist becomes the shared one too; steps for this time stay its own.
+    for (auto &s : steps)
+        if (s.task == taskId && !s.once) {
+            s.task = 0;
+            s.routine = r.id;
+        }
     return r.id;
 }
 
@@ -487,7 +544,8 @@ bool Store::complete(int id, const QDateTime &at, const QString &note, const QDa
     Task *t = task(id);
     if (!t)
         return false;
-    completions.append({nextId("completions"), t->id, t->title, t->context, at, note.trimmed()});
+    completions.append({nextId("completions"), t->id, t->title, t->context, at, note.trimmed(), false, snapshot(id)});
+    resetChecklist(id);
     t->snoozedUntil = {};
     t->today = {};
     switch (t->schedule.kind) {
@@ -509,7 +567,8 @@ bool Store::skip(int id, const QDateTime &at, const QString &reason, const QDate
     Task *t = task(id);
     if (!t)
         return false;
-    completions.append({nextId("completions"), t->id, t->title, t->context, at, reason.trimmed(), true});
+    completions.append({nextId("completions"), t->id, t->title, t->context, at, reason.trimmed(), true, snapshot(id)});
+    resetChecklist(id);
     t->snoozedUntil = {};
     t->today = {};
     switch (t->schedule.kind) {
@@ -570,4 +629,143 @@ QString Store::followUpTitle(const QString &text) {
     if (space > Limit / 2)
         cut = cut.left(space);
     return cut.trimmed() + QString::fromUtf8("…");
+}
+
+QList<Step> Store::checklist(int taskId) const {
+    const Task *t = task(taskId);
+    if (!t)
+        return {};
+    QList<Step> shared, own, once;
+    for (const Step &s : steps) {
+        if (t->routine && s.routine == t->routine && !s.task)
+            shared.append(s);
+        else if (s.task == taskId && !s.routine && !s.once)
+            own.append(s);
+        else if (s.task == taskId && !s.routine && s.round == t->round)
+            once.append(s);
+    }
+    auto byPosition = [](const Step &a, const Step &b) { return a.position != b.position ? a.position < b.position : a.id < b.id; };
+    std::sort(shared.begin(), shared.end(), byPosition);
+    std::sort(own.begin(), own.end(), byPosition);
+    std::sort(once.begin(), once.end(), byPosition);
+    return shared + own + once;
+}
+
+bool Store::checked(int taskId, int stepId) const {
+    const Task *t = task(taskId);
+    for (const Check &c : checks)
+        if (t && c.task == taskId && c.step == stepId && c.round == t->round)
+            return true;
+    return false;
+}
+
+Step *Store::step(int id) {
+    for (auto &s : steps)
+        if (id && s.id == id)
+            return &s;
+    return nullptr;
+}
+
+const Step *Store::step(int id) const { return const_cast<Store *>(this)->step(id); }
+
+int Store::addStep(int taskId, const QString &text, bool keep, const QDateTime &at) {
+    const Task *t = task(taskId);
+    const QString trimmed = text.trimmed();
+    if (!t || trimmed.isEmpty())
+        return 0;
+    Step s;
+    s.id = nextId("steps");
+    s.text = trimmed;
+    s.once = !keep;
+    s.at = at;
+    s.round = keep ? 0 : t->round;
+    if (keep && t->routine)
+        s.routine = t->routine;
+    else
+        s.task = taskId;
+    for (const Step &other : steps)
+        if (other.routine == s.routine && other.task == s.task)
+            s.position = std::max(s.position, other.position + 1);
+    steps.append(s);
+    return s.id;
+}
+
+bool Store::setChecked(int taskId, int stepId, bool on, const QDateTime &at) {
+    bool listed = false;
+    for (const Step &s : checklist(taskId))
+        listed = listed || s.id == stepId;
+    if (!listed)
+        return false;
+    if (!on) {
+        checks.removeIf([&](const Check &c) { return c.task == taskId && c.step == stepId; });
+        return true;
+    }
+    if (!checked(taskId, stepId))
+        checks.append({nextId("checks"), taskId, stepId, at, task(taskId)->round});
+    return true;
+}
+
+bool Store::removeStep(int id) {
+    if (steps.removeIf([id](const Step &s) { return s.id == id; }) == 0)
+        return false;
+    checks.removeIf([id](const Check &c) { return c.step == id; });
+    return true;
+}
+
+void Store::setChecklist(int routineId, int taskId, const QList<std::pair<int, QString>> &entries, const QDateTime &at) {
+    if (!routineId && !task(taskId))
+        return;
+    if (routineId)
+        taskId = 0;
+    auto owned = [&](const Step &s) { return s.routine == routineId && s.task == taskId && !s.once; };
+    QSet<int> kept;
+    int position = 0;
+    for (const auto &[id, text] : entries) {
+        const QString trimmed = text.trimmed();
+        if (trimmed.isEmpty())
+            continue;
+        Step *existing = step(id);
+        if (existing && owned(*existing) && !kept.contains(id)) {
+            existing->text = trimmed;
+            existing->position = position++;
+            kept.insert(id);
+            continue;
+        }
+        Step s;
+        s.id = nextId("steps");
+        s.routine = routineId;
+        s.task = taskId;
+        s.text = trimmed;
+        s.position = position++;
+        s.at = at;
+        steps.append(s);
+        kept.insert(s.id);
+    }
+    QList<int> gone;
+    for (const Step &s : steps)
+        if (owned(s) && !kept.contains(s.id))
+            gone.append(s.id);
+    for (int id : gone)
+        removeStep(id);
+}
+
+QList<DoneStep> Store::snapshot(int taskId) const {
+    QList<DoneStep> done;
+    for (const Step &s : checklist(taskId))
+        done.append({s.text, checked(taskId, s.id), s.once});
+    return done;
+}
+
+// The next time starts clean: no boxes ticked, and no steps for this time.
+void Store::resetChecklist(int taskId) {
+    if (Task *t = task(taskId))
+        ++t->round;
+    checks.removeIf([taskId](const Check &c) { return c.task == taskId; });
+    steps.removeIf([taskId](const Step &s) { return s.task == taskId && s.once; });
+}
+
+// Steps of a routine that's gone, and checks of steps or tasks that are.
+void Store::removeOrphanSteps() {
+    steps.removeIf([this](const Step &s) { return s.routine ? !routine(s.routine) : !task(s.task); });
+    checks.removeIf([this](const Check &c) { return !task(c.task) || !step(c.step); });
 }

@@ -98,6 +98,12 @@ public:
     Q_INVOKABLE void renameContext(int id, const QString &name);
     Q_INVOKABLE void removeContext(int id);
     Q_INVOKABLE void removeCompletion(int id);
+    // Checklists. Ticking a box changes nothing about how needful the task
+    // is. A step added here is for this time only unless keep is set, when
+    // it joins the checklist (on a routine's copy, the shared one).
+    Q_INVOKABLE bool checkStep(int task, int step, bool checked);
+    Q_INVOKABLE int addStep(int task, const QString &text, bool keep = false);
+    Q_INVOKABLE void removeStep(int task, int step);
     // A note on a context; with followUp, a one-time task to deal with it.
     // Fields: context, text, followUp, priority, due (ISO). Returns its id.
     Q_INVOKABLE int addLog(const QVariantMap &fields);
@@ -138,6 +144,7 @@ private:
 
     QVariantMap describe(const Task &task, const QDate &today) const;
     QVariantMap describe(const Completion &done) const;
+    QVariantList stepsOf(const Task &task) const;
     QVariantMap describe(const LogEntry &entry) const;
     QString dueText(const Task &task, const QDate &today) const;
     QString scheduleText(const Task &task) const;

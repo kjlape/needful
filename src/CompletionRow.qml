@@ -65,6 +65,14 @@ Rectangle {
                 Layout.fillWidth: true
             }
             Label {
+                visible: !row.compact && text !== ""
+                text: (row.entry.steps || []).map(s => (s.checked ? "✓ " : "– ") + s.text).join("   ")
+                wrapMode: Text.Wrap
+                color: "#85858e"
+                font.pixelSize: 12
+                Layout.fillWidth: true
+            }
+            Label {
                 visible: (row.entry.note || "") !== ""
                 text: row.entry.note || ""
                 wrapMode: Text.Wrap

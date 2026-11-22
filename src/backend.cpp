@@ -23,6 +23,13 @@ QString kindName(Schedule::Kind kind) {
     return kind == Schedule::Once ? "once" : kind == Schedule::Ask ? "ask" : "every";
 }
 
+QString stepText(const Store &store, int taskId) {
+    QStringList texts;
+    for (const Step &s : store.checklist(taskId))
+        texts.append(s.text);
+    return texts.join("\n");
+}
+
 QString stateName(Store::State state) {
     switch (state) {
     case Store::Due: return "due";
@@ -384,7 +391,7 @@ void Backend::refresh() {
     } else {
         const auto &list = m_view == "today" ? todays : m_view == "upcoming" ? upcoming : needful;
         for (const Task *t : list)
-            if (matches(t->title + "\n" + t->notes + "\n" + m_store.contextPath(t->context)))
+            if (matches(t->title + "\n" + t->notes + "\n" + m_store.contextPath(t->context) + "\n" + stepText(m_store, t->id)))
                 m_items.append(describe(*t, day));
     }
 
@@ -617,6 +624,17 @@ QVariantMap Backend::describe(const Task &t, const QDate &today) const {
         months.append(m);
     const Completion *last = m_store.lastDone(t.id);
     const Store::State state = m_store.state(t, today);
+    // The row shows the next box to tick, and how many are ticked.
+    const QVariantList steps = stepsOf(t);
+    int ticked = 0;
+    QString nextStep;
+    for (const auto &value : steps) {
+        const QVariantMap step = value.toMap();
+        if (step["checked"].toBool())
+            ++ticked;
+        else if (nextStep.isEmpty())
+            nextStep = step["text"].toString();
+    }
     // A routine's other copies, so the window can say where else it applies.
     const Routine *routine = m_store.routine(t.routine);
     QVariantList copies, contexts{t.context};
@@ -658,11 +676,33 @@ QVariantMap Backend::describe(const Task &t, const QDate &today) const {
                          : t.schedule.kind == Schedule::Ask
                              ? QString()
                              : tr("It comes back %1.").arg(QLocale().toString(m_store.afterSkip(t, today), QLocale::LongFormat))},
-            {"lastDone", last ? tr("Last done %1").arg(agoText(last->at.date(), today)) : tr("Never done")}};
+            {"lastDone", last ? tr("Last done %1").arg(agoText(last->at.date(), today)) : tr("Never done")},
+            {"steps", steps},
+            {"stepsDone", ticked},
+            {"stepsTotal", int(steps.size())},
+            {"nextStep", nextStep},
+            {"stepsText", steps.isEmpty() ? QString()
+                          : nextStep.isEmpty() ? QString("%1/%2").arg(ticked).arg(steps.size())
+                                               : QString::fromUtf8("%1 · %2/%3").arg(nextStep).arg(ticked).arg(steps.size())}};
+}
+
+QVariantList Backend::stepsOf(const Task &t) const {
+    QVariantList list;
+    for (const Step &s : m_store.checklist(t.id))
+        list.append(QVariantMap{{"id", s.id},
+                                {"text", s.text},
+                                {"checked", m_store.checked(t.id, s.id)},
+                                {"once", s.once},
+                                {"shared", s.routine != 0}});
+    return list;
 }
 
 QVariantMap Backend::describe(const Completion &c) const {
     const QLocale locale;
+    // A skip passed over every step, ticked or not.
+    QVariantList doneSteps;
+    for (const DoneStep &s : c.steps)
+        doneSteps.append(QVariantMap{{"text", s.text}, {"checked", s.checked && !c.skipped}, {"once", s.once}});
     return {{"kind", "completion"},
             {"id", c.id},
             {"task", c.task},
@@ -674,6 +714,7 @@ QVariantMap Backend::describe(const Completion &c) const {
             {"time", locale.toString(c.at.time(), QLocale::ShortFormat)},
             {"ago", agoText(c.at.date(), today())},
             {"exists", m_store.task(c.task) != nullptr},
+            {"steps", doneSteps},
             {"fromLog", m_store.logForTask(c.task)}};
 }
 
@@ -767,6 +808,14 @@ int Backend::saveTask(const QVariantMap &fields) {
     const Fields f = readFields(fields);
     const QString notes = fields.value("notes").toString().trimmed();
     const QDate due = QDate::fromString(fields.value("due").toString(), Qt::ISODate);
+    // The checklist that stays, for whichever the edit is to: the routine, or
+    // this copy alone, or a task of its own. Absent leaves it as it is.
+    const bool hasSteps = fields.contains("checklist");
+    QList<std::pair<int, QString>> steps;
+    for (const auto &value : fields.value("checklist").toList()) {
+        const QVariantMap step = value.toMap();
+        steps.append({step.value("id").toInt(), value.typeId() == QMetaType::QString ? value.toString() : step.value("text").toString()});
+    }
     QList<int> contexts;
     for (const auto &value : fields.value("contexts").toList())
         if (m_store.context(value.toInt()) && !contexts.contains(value.toInt()))
@@ -793,6 +842,8 @@ int Backend::saveTask(const QVariantMap &fields) {
             if (sorted(f.months) != sorted(r->months)) existing->overrides.append("months");
             if (due.isValid())
                 existing->due = due;
+            if (hasSteps)
+                m_store.setChecklist(0, id, steps, now());
             return true;
         }
 
@@ -805,6 +856,8 @@ int Backend::saveTask(const QVariantMap &fields) {
             r->priority = f.priority;
             r->schedule = f.schedule;
             r->months = f.months;
+            if (hasSteps)
+                m_store.setChecklist(routineId, 0, steps, now());
             if (!contexts.isEmpty()) {
                 // Add before removing, so the routine never runs out of copies.
                 const QList<int> before = m_store.copies(routineId);
@@ -843,6 +896,8 @@ int Backend::saveTask(const QVariantMap &fields) {
             *existing = draft;
         else
             id = m_store.addTask(draft, today());
+        if (hasSteps)
+            m_store.setChecklist(0, id, steps, now());
 
         if (contexts.size() > 1) {
             const int routineId = m_store.makeRoutine(id);
@@ -970,6 +1025,33 @@ void Backend::removeLog(int id) {
 
 void Backend::removeCompletion(int id) {
     change([&] { return m_store.removeCompletion(id); });
+}
+
+bool Backend::checkStep(int task, int step, bool checked) {
+    bool known = false;
+    change([&] {
+        known = m_store.setChecked(task, step, checked, now());
+        return known;
+    });
+    return known;
+}
+
+int Backend::addStep(int task, const QString &text, bool keep) {
+    int id = 0;
+    change([&] {
+        id = m_store.addStep(task, text, keep, now());
+        return id != 0;
+    });
+    return id;
+}
+
+void Backend::removeStep(int task, int step) {
+    change([&] {
+        for (const Step &s : m_store.checklist(task))
+            if (s.id == step)
+                return m_store.removeStep(step);
+        return false;
+    });
 }
 
 QString Backend::dateAfter(int amount, const QString &unit) const {

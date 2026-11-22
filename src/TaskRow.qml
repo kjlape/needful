@@ -15,7 +15,7 @@ Rectangle {
     signal editRequested()
 
     Material.roundedScale: theme.radius
-    implicitHeight: 58
+    implicitHeight: (task.stepsText || "") !== "" ? 76 : 58
     radius: Math.min(6, theme.radius)
     color: current ? "#1d1d22" : hover.hovered ? "#16161a" : "transparent"
     border.color: current ? Qt.rgba(1, 1, 1, 0.08) : "transparent"
@@ -60,6 +60,15 @@ Rectangle {
                     elide: Text.ElideRight
                     Layout.fillWidth: true
                 }
+            }
+            // The next box to tick, so the list says what to do next.
+            Label {
+                visible: text !== ""
+                Layout.fillWidth: true
+                elide: Text.ElideRight
+                font.pixelSize: 13
+                color: (row.task.nextStep || "") !== "" ? "#c4c4cc" : "#85858e"
+                text: row.task.stepsText || ""
             }
             Label {
                 Layout.fillWidth: true

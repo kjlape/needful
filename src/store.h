@@ -7,6 +7,7 @@
 #include <QMap>
 #include <QString>
 #include <QStringList>
+#include <utility>
 
 // Everything Needful knows, and the rules that rank it. The store needs no
 // display, so the window, the command line, and the tests all share it, and
@@ -58,6 +59,41 @@ struct Task {
     QDate today;        // Pulled into this day's list.
     bool archived = false;
     QDate created;
+    // How many times it's been done or skipped. Checks and steps for this
+    // time only belong to one time, so a box ticked on another computer
+    // before it heard the task was done falls to the reset.
+    int round = 0;
+};
+
+// One step of a task's checklist. A routine's steps belong to the routine
+// and every copy shares them; a task's own come after those. A step for this
+// time only goes away when the task is next done or skipped.
+struct Step {
+    int id = 0;
+    int routine = 0; // Shared by the routine's copies, or 0.
+    int task = 0;    // This task's own, or 0.
+    QString text;
+    int position = 0;
+    bool once = false; // For this time only.
+    QDateTime at;      // When it was added.
+    int round = 0;     // The task's time it's for, when once.
+};
+
+// A ticked box: this step, on this task, this time. Unticking removes it.
+struct Check {
+    int id = 0;
+    int task = 0;
+    int step = 0;
+    QDateTime at;
+    int round = 0; // The task's time it was ticked in.
+};
+
+// A step as it was when the task was done or skipped, so later changes to
+// the checklist don't rewrite the past.
+struct DoneStep {
+    QString text;
+    bool checked = false;
+    bool once = false;
 };
 
 // A record of doing a task, or of skipping one time of it. It keeps the
@@ -71,6 +107,7 @@ struct Completion {
     QDateTime at;
     QString note;          // For a skip, why.
     bool skipped = false;  // Passed over this time, not done.
+    QList<DoneStep> steps; // The checklist as it stood.
 };
 
 // A note on a context: a squeak, a leak, an idea. It sits in the history
@@ -92,6 +129,8 @@ public:
     QList<Task> tasks;
     QList<Completion> completions;
     QList<LogEntry> log;
+    QList<Step> steps;
+    QList<Check> checks;
     // The highest id ever used in each list ("tasks", "log", ...), counting
     // records since deleted, so a new one never takes a deleted one's id.
     // Only a synced store keeps them; on one file it stays empty.
@@ -156,8 +195,29 @@ public:
     int logForTask(int taskId) const; // The entry a follow-up task came from, or 0.
     static QString followUpTitle(const QString &text);
 
+    // Checklists. A task's steps this time: its routine's, then its own,
+    // then those for this time only.
+    QList<Step> checklist(int taskId) const;
+    bool checked(int taskId, int stepId) const;
+    Step *step(int id);
+    const Step *step(int id) const;
+    // Adds a step for this time only, or with keep one that stays: on a
+    // routine's copy, to the routine, which every copy shares. Returns its id.
+    int addStep(int taskId, const QString &text, bool keep, const QDateTime &at);
+    bool setChecked(int taskId, int stepId, bool checked, const QDateTime &at);
+    bool removeStep(int id); // And its checks.
+    // Replaces the steps that stay on a routine (routineId) or a task
+    // (taskId) with `texts`, in order. An entry's id keeps that step, and its
+    // checks; 0 makes a new one. Steps left out go, with their checks.
+    void setChecklist(int routineId, int taskId, const QList<std::pair<int, QString>> &entries, const QDateTime &at);
+
     static QString unitName(const QString &unit);
     // The id the next record in a list gets: "contexts", "routines", "tasks",
-    // "completions", or "log".
+    // "completions", "log", "steps", or "checks".
     int nextId(const QString &list) const;
+
+private:
+    QList<DoneStep> snapshot(int taskId) const;
+    void resetChecklist(int taskId);
+    void removeOrphanSteps();
 };

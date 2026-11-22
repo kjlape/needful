@@ -14,6 +14,14 @@ Rectangle {
     signal editRequested()
     signal deleteRequested()
     signal removeCompletion(int id)
+    signal stepsLeft() // Escape from adding a step.
+
+    // A, from the window: start typing a step for this time.
+    function addStep() { stepField.forceActiveFocus() }
+
+    function doneStepsText(steps, skipped) {
+        return (steps || []).map(s => (s.checked ? "✓ " : "– ") + s.text).join("   ")
+    }
 
     color: "#121215"
     Material.roundedScale: theme.radius
@@ -92,6 +100,70 @@ Rectangle {
                 wrapMode: Text.Wrap
                 color: "#c4c4cc"
                 Layout.fillWidth: true
+            }
+
+            // The checklist: tick by click, or the next one with Shift+Space.
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 0
+                Repeater {
+                    model: pane.task.steps || []
+                    RowLayout {
+                        id: stepRow
+                        required property var modelData
+                        Layout.fillWidth: true
+                        spacing: 0
+                        CheckBox {
+                            Layout.fillWidth: true
+                            checked: stepRow.modelData.checked
+                            text: stepRow.modelData.text
+                            onToggled: backend.checkStep(pane.task.id, stepRow.modelData.id, checked)
+                            contentItem: Label {
+                                leftPadding: parent.indicator.width + parent.spacing
+                                text: parent.text
+                                wrapMode: Text.Wrap
+                                verticalAlignment: Text.AlignVCenter
+                                color: parent.checked ? "#85858e" : "#ececf0"
+                                font.strikeout: parent.checked
+                            }
+                        }
+                        Label {
+                            visible: stepRow.modelData.once
+                            text: qsTr("this time")
+                            font.pixelSize: 11
+                            color: "#6e6e78"
+                        }
+                        ToolButton {
+                            visible: stepRow.modelData.once
+                            text: "×"
+                            implicitWidth: 28
+                            implicitHeight: 28
+                            onClicked: backend.removeStep(pane.task.id, stepRow.modelData.id)
+                            ToolTip.visible: hovered
+                            ToolTip.text: qsTr("Remove this step")
+                        }
+                    }
+                }
+                TextField {
+                    id: stepField
+                    Layout.fillWidth: true
+                    placeholderText: qsTr("+ Add a step for this time (A)")
+                    font.pixelSize: 13
+                    leftPadding: 10
+                    topPadding: 8
+                    bottomPadding: 8
+                    background: Rectangle {
+                        radius: Math.min(6, theme.radius)
+                        color: stepField.activeFocus ? Qt.rgba(1, 1, 1, 0.06) : "transparent"
+                        border.color: stepField.activeFocus ? theme.accent : Qt.rgba(1, 1, 1, 0.08)
+                    }
+                    // Enter adds it and stays here for the next one.
+                    onAccepted: {
+                        if (text.trim() !== "" && backend.addStep(pane.task.id, text) > 0)
+                            text = ""
+                    }
+                    Keys.onEscapePressed: { text = ""; pane.stepsLeft() }
+                }
             }
 
             ColumnLayout {
@@ -184,6 +256,14 @@ Rectangle {
                             ToolTip.visible: hovered
                             ToolTip.text: qsTr("Remove from history")
                         }
+                    }
+                    Label {
+                        visible: text !== ""
+                        text: pane.doneStepsText(entry.modelData.steps)
+                        wrapMode: Text.Wrap
+                        color: "#85858e"
+                        font.pixelSize: 12
+                        Layout.fillWidth: true
                     }
                     Label {
                         visible: entry.modelData.note !== ""

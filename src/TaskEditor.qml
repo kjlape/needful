@@ -18,6 +18,8 @@ Dialog {
     property var months: []
     property var ticked: []      // Context ids with a copy, or the one context.
     property string scope: "all" // For a routine's copy: "all" or "only".
+    // The steps that stay, as {id, text}: the routine's, or this copy's own.
+    property var checklist: []
     readonly property bool isCopy: (task.routine || 0) > 0
     readonly property bool onlyThis: isCopy && scope === "only"
     readonly property bool isNew: taskId === 0
@@ -36,8 +38,33 @@ Dialog {
         allYear.checked = months.length === 0
     }
 
+    // Steps for this time only are added from the detail, not here.
+    function loadChecklist() {
+        checklist = (task.steps || []).filter(s => !s.once && (!isCopy || s.shared === !onlyThis))
+                                      .map(s => ({ id: s.id, text: s.text }))
+        stepField.text = ""
+    }
+
+    function addToChecklist() {
+        const text = stepField.text.trim()
+        if (text === "")
+            return
+        checklist = checklist.concat([{ id: 0, text: text }])
+        stepField.text = ""
+    }
+
+    function moveStep(from, to) {
+        if (to < 0 || to >= checklist.length)
+            return
+        const list = checklist.slice()
+        const [step] = list.splice(from, 1)
+        list.splice(to, 0, step)
+        checklist = list
+    }
+
     function setScope(value) {
         scope = value
+        loadChecklist()
         load(onlyThis ? task : task.shared)
         // A copy's own due date is edited only here; new contexts start on the chosen day.
         due.date = onlyThis ? task.due : backend.dateAfter(0, "day")
@@ -52,6 +79,7 @@ Dialog {
             setScope("all")
         } else {
             scope = "all"
+            loadChecklist()
             load(task)
             due.date = task.due || backend.dateAfter(0, "day")
         }
@@ -69,7 +97,9 @@ Dialog {
     function save() {
         if (titleField.text.trim() === "" || (isCopy && !onlyThis && ticked.length === 0))
             return
+        addToChecklist() // A step typed but not yet added still counts.
         backend.saveTask({
+            checklist: checklist,
             id: taskId,
             scope: scope,
             title: titleField.text,
@@ -289,6 +319,68 @@ Dialog {
                 Layout.topMargin: 10
             }
             DateStepper { id: due; Layout.fillWidth: true }
+
+            Label {
+                text: qsTr("Checklist")
+                color: "#a0a0a8"
+                Layout.alignment: Qt.AlignTop
+                Layout.topMargin: 10
+            }
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 0
+                Repeater {
+                    model: editor.checklist
+                    RowLayout {
+                        id: stepRow
+                        required property var modelData
+                        required property int index
+                        Layout.fillWidth: true
+                        spacing: 0
+                        TextField {
+                            Layout.fillWidth: true
+                            text: stepRow.modelData.text
+                            font.pixelSize: 13
+                            // Edited in place; the list itself only changes on add, move, and remove.
+                            onTextEdited: editor.checklist[stepRow.index].text = text
+                        }
+                        ToolButton {
+                            text: "↑"
+                            enabled: stepRow.index > 0
+                            implicitWidth: 30
+                            onClicked: editor.moveStep(stepRow.index, stepRow.index - 1)
+                            ToolTip.visible: hovered
+                            ToolTip.delay: 600
+                            ToolTip.text: qsTr("Move up")
+                        }
+                        ToolButton {
+                            text: "×"
+                            implicitWidth: 30
+                            onClicked: { const list = editor.checklist.slice(); list.splice(stepRow.index, 1); editor.checklist = list }
+                            ToolTip.visible: hovered
+                            ToolTip.delay: 600
+                            ToolTip.text: qsTr("Remove")
+                        }
+                    }
+                }
+                TextField {
+                    id: stepField
+                    Layout.fillWidth: true
+                    font.pixelSize: 13
+                    placeholderText: editor.onlyThis ? qsTr("+ A step for %1 only, every time").arg(editor.contextName)
+                                   : editor.isCopy || editor.ticked.length > 1 ? qsTr("+ A step for every context, every time")
+                                   : qsTr("+ A step, every time")
+                    onAccepted: editor.addToChecklist()
+                }
+                Label {
+                    visible: editor.isCopy && !editor.onlyThis && (editor.task.steps || []).some(s => !s.shared && !s.once)
+                    text: qsTr("%1 also has steps of its own, after these.").arg(editor.contextName)
+                    font.pixelSize: 12
+                    color: "#85858e"
+                    wrapMode: Text.Wrap
+                    Layout.fillWidth: true
+                }
+            }
 
             TextArea {
                 id: notesField
