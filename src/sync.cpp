@@ -29,6 +29,7 @@ QString pointsInto(const QString &list, const QString &field) {
     if ((list == "tasks" || list == "steps") && field == "routine") return "routines";
     if ((list == "completions" || list == "log" || list == "steps" || list == "checks") && field == "task") return "tasks";
     if (list == "checks" && field == "step") return "steps";
+    if (list == "log" && field == "about") return "tasks";
     return {};
 }
 
@@ -692,6 +693,7 @@ Store SyncFolder::combine(const Store &folder, const Store &local, Setup *counts
             (*mapped)["log"][e.id] = copy.id;
         copy.context = context;
         copy.task = taskFor(e.task);
+        copy.about = e.about ? taskFor(e.about) : 0;
         out.log.append(copy);
         ++counts->history;
     }

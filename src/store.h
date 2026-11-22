@@ -108,16 +108,29 @@ struct Completion {
     QString note;          // For a skip, why.
     bool skipped = false;  // Passed over this time, not done.
     QList<DoneStep> steps; // The checklist as it stood.
+    // Which time of the task it was: the task's round when it was done or
+    // skipped, so notes on that time find it. Completions from before rounds
+    // were kept get theirs from the order of the task's history.
+    int round = 0;
 };
 
 // A note on a context: a squeak, a leak, an idea. It sits in the history
 // beside what was done, and can raise a one-off task to follow it up.
+//
+// A note can also be about one time of a task: the time coming up, or one
+// already done or skipped. It names the task and the round, never "whatever
+// is current", so a note written on one computer while another marks the
+// task done lands on that completion, and notes on the coming time go with
+// it into history when it's done.
 struct LogEntry {
     int id = 0;
     int context = 0;
     QDateTime at;
     QString text;
-    int task = 0; // The follow-up task, or 0.
+    int task = 0;  // The follow-up task, or 0.
+    int about = 0; // The task it's about, or 0 for the context alone.
+    int round = 0; // Which time of that task.
+    QString aboutTitle; // The task's title when it was written, for after it's gone.
 };
 
 class Store {
@@ -190,6 +203,14 @@ public:
     bool removeCompletion(int id);
     // Notes. A follow-up becomes a one-time task in the same context.
     int addLog(int context, const QDateTime &at, const QString &text);
+    // A note about the task's coming time, in the task's context.
+    int addTaskNote(int taskId, const QDateTime &at, const QString &text);
+    // A note about a time already done or skipped, in its context then.
+    int addCompletionNote(int completionId, const QDateTime &at, const QString &text);
+    // The notes about one time of a task, oldest first.
+    QList<LogEntry> notesOn(int taskId, int round) const;
+    const Completion *completion(int id) const;
+    const Completion *completionAt(int taskId, int round) const;
     bool removeLog(int id);
     const LogEntry *logEntry(int id) const;
     int logForTask(int taskId) const; // The entry a follow-up task came from, or 0.

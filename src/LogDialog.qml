@@ -4,7 +4,9 @@ import QtQuick.Controls.Material
 import QtQuick.Layouts
 
 // Notes something on a context (a squeak, a drip, an idea) for its history,
-// and optionally raises a one-off task to follow it up.
+// and optionally raises a one-off task to follow it up. A note can instead
+// be about one time of a task, coming up or past; then it's in the task's
+// context, and the dialog says which time.
 Dialog {
     id: dialog
     anchors.centerIn: parent
@@ -13,12 +15,47 @@ Dialog {
     title: qsTr("Log a note")
     Material.roundedScale: theme.radius
 
-    function openFor(contextId) {
+    // What the note is about: a task's coming time (about), a past time
+    // (done), or neither, for the context picked here.
+    property int about: 0
+    property int done: 0
+    property string aboutText: ""
+
+    function reset() {
         note.text = ""
         followUp.checked = false
         priorityBox.currentIndex = 1
         due.date = backend.dateAfter(0, "day")
+    }
+
+    function openFor(contextId) {
+        reset()
+        about = 0
+        done = 0
+        aboutText = ""
         contextBox.currentIndex = Math.max(0, contextBox.model.findIndex(c => c.id === contextId))
+        open()
+        note.forceActiveFocus()
+    }
+
+    function where(path) { return path ? " · " + path : "" }
+
+    // "About: Oil change · Tacoma · this time"
+    function openAbout(task) {
+        reset()
+        about = task.id
+        done = 0
+        aboutText = task.title + where(task.contextPath) + " · " + qsTr("this time")
+        open()
+        note.forceActiveFocus()
+    }
+
+    // "About: Oil change · Tacoma · Nov 21", for a completion or skip.
+    function openOn(entry) {
+        reset()
+        about = 0
+        done = entry.id
+        aboutText = entry.title + where(entry.contextPath) + " · " + entry.date
         open()
         note.forceActiveFocus()
     }
@@ -28,6 +65,8 @@ Dialog {
             return
         backend.addLog({
             context: contextBox.model[contextBox.currentIndex].id,
+            about: about,
+            done: done,
             text: note.text,
             followUp: followUp.checked,
             priority: priorityBox.currentIndex + 1,
@@ -40,8 +79,17 @@ Dialog {
         width: parent.width
         spacing: 10
 
+        Label {
+            visible: dialog.aboutText !== ""
+            text: qsTr("About: %1").arg(dialog.aboutText)
+            color: "#a0a0a8"
+            wrapMode: Text.Wrap
+            Layout.fillWidth: true
+        }
+
         ComboBox {
             id: contextBox
+            visible: dialog.aboutText === ""
             Layout.fillWidth: true
             textRole: "label"
             model: [{ id: 0, label: qsTr("No context") }].concat(

@@ -383,7 +383,7 @@ void Backend::refresh() {
             if (matches(c->title + "\n" + c->note + "\n" + m_store.contextPath(c->context)))
                 entries.append({c->at, describe(*c)});
         for (const LogEntry *e : notes)
-            if (matches(e->text + "\n" + m_store.contextPath(e->context)))
+            if (matches(e->text + "\n" + e->aboutTitle + "\n" + m_store.contextPath(e->context)))
                 entries.append({e->at, describe(*e)});
         std::stable_sort(entries.begin(), entries.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
         for (const auto &entry : entries)
@@ -681,6 +681,7 @@ QVariantMap Backend::describe(const Task &t, const QDate &today) const {
             {"stepsDone", ticked},
             {"stepsTotal", int(steps.size())},
             {"nextStep", nextStep},
+            {"notesThisTime", notesOf(t.id, t.round)},
             {"stepsText", steps.isEmpty() ? QString()
                           : nextStep.isEmpty() ? QString("%1/%2").arg(ticked).arg(steps.size())
                                                : QString::fromUtf8("%1 · %2/%3").arg(nextStep).arg(ticked).arg(steps.size())}};
@@ -709,22 +710,41 @@ QVariantMap Backend::describe(const Completion &c) const {
             {"title", c.title},
             {"note", c.note},
             {"skipped", c.skipped},
+            {"at", c.at},
             {"contextPath", m_store.contextPath(c.context)},
             {"date", locale.toString(c.at.date(), QLocale::ShortFormat)},
             {"time", locale.toString(c.at.time(), QLocale::ShortFormat)},
             {"ago", agoText(c.at.date(), today())},
             {"exists", m_store.task(c.task) != nullptr},
             {"steps", doneSteps},
+            {"notes", notesOf(c.task, c.round)},
             {"fromLog", m_store.logForTask(c.task)}};
+}
+
+QVariantList Backend::notesOf(int taskId, int round) const {
+    QVariantList list;
+    for (const LogEntry &e : m_store.notesOn(taskId, round))
+        list.append(describe(e));
+    return list;
 }
 
 QVariantMap Backend::describe(const LogEntry &e) const {
     const QLocale locale;
     const Task *followUp = m_store.task(e.task);
     const bool done = followUp ? followUp->archived || m_store.lastDone(followUp->id) : e.task != 0;
+    // A note about a time names the task, as it is now or as it was.
+    const Task *about = m_store.task(e.about);
+    const Completion *time = m_store.completionAt(e.about, e.round);
     return {{"kind", "log"},
+            {"about", e.about},
+            {"aboutTitle", e.about ? time ? time->title : about ? about->title : e.aboutTitle : QString()},
+            {"aboutDone", time ? time->id : 0},
+            {"aboutExists", about != nullptr},
+            {"aboutDate", time ? locale.toString(time->at.date(), QLocale::ShortFormat) : QString()},
+            {"thisTime", about && !time && e.round == about->round},
             {"id", e.id},
             {"text", e.text},
+            {"at", e.at},
             {"contextPath", m_store.contextPath(e.context)},
             {"date", locale.toString(e.at.date(), QLocale::ShortFormat)},
             {"time", locale.toString(e.at.time(), QLocale::ShortFormat)},
@@ -740,10 +760,7 @@ QVariantMap Backend::task(int id) const {
     if (!t)
         return {};
     QVariantMap map = describe(*t, today());
-    QVariantList history;
-    for (const auto &c : m_store.history(id))
-        history.append(describe(c));
-    map["history"] = history;
+    map["history"] = historyOf(id);
     if (const Routine *r = m_store.routine(t->routine)) {
         QVariantList months;
         for (int m : r->months)
@@ -998,7 +1015,12 @@ int Backend::addLog(const QVariantMap &fields) {
     // The note and its follow-up are one change, so one undo takes back both.
     change([&] {
         const QDateTime at = now();
-        id = m_store.addLog(fields.value("context").toInt(), at, text);
+        if (const int done = fields.value("done").toInt())
+            id = m_store.addCompletionNote(done, at, text);
+        else if (const int about = fields.value("about").toInt())
+            id = m_store.addTaskNote(about, at, text);
+        else
+            id = m_store.addLog(fields.value("context").toInt(), at, text);
         if (!id)
             return false;
         if (fields.value("followUp").toBool()) {
@@ -1017,6 +1039,13 @@ int Backend::addLog(const QVariantMap &fields) {
         return true;
     });
     return id;
+}
+
+QVariantList Backend::historyOf(int taskId) const {
+    QVariantList history;
+    for (const auto &c : m_store.history(taskId))
+        history.append(describe(c));
+    return history;
 }
 
 void Backend::removeLog(int id) {

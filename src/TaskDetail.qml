@@ -14,10 +14,39 @@ Rectangle {
     signal editRequested()
     signal deleteRequested()
     signal removeCompletion(int id)
-    signal stepsLeft() // Escape from adding a step.
+    signal removeNote(int id)
+    signal noteOnTime(var entry) // Add a note about a past time.
+    signal stepsLeft() // Escape from adding a step, or a note.
 
     // A, from the window: start typing a step for this time.
     function addStep() { stepField.forceActiveFocus() }
+
+    component NoteLine: RowLayout {
+        id: noteLine
+        property var note: ({})
+        property bool removable: false
+        Layout.fillWidth: true
+        spacing: 8
+        Label { text: noteLine.note.date || ""; color: "#85858e"; font.pixelSize: 12; Layout.alignment: Qt.AlignTop }
+        Label {
+            textFormat: Text.PlainText
+            text: noteLine.note.text || ""
+            wrapMode: Text.Wrap
+            color: "#c4c4cc"
+            font.pixelSize: 13
+            Layout.fillWidth: true
+        }
+        ToolButton {
+            visible: noteLine.removable
+            text: "×"
+            implicitWidth: 28
+            implicitHeight: 28
+            Layout.alignment: Qt.AlignTop
+            onClicked: pane.removeNote(noteLine.note.id)
+            ToolTip.visible: hovered
+            ToolTip.text: qsTr("Remove this note")
+        }
+    }
 
     function doneStepsText(steps, skipped) {
         return (steps || []).map(s => (s.checked ? "✓ " : "– ") + s.text).join("   ")
@@ -166,6 +195,39 @@ Rectangle {
                 }
             }
 
+            // What's been noticed this time, kept until it's done or skipped,
+            // when it goes into the history with it.
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 2
+                Label { text: qsTr("Notes this time"); color: "#85858e"; font.pixelSize: 12 }
+                Repeater {
+                    model: pane.task.notesThisTime || []
+                    NoteLine { required property var modelData; note: modelData; removable: true }
+                }
+                TextField {
+                    id: noteField
+                    Layout.fillWidth: true
+                    Layout.topMargin: 4
+                    placeholderText: qsTr("+ Add a note (Shift+L)")
+                    font.pixelSize: 13
+                    leftPadding: 10
+                    topPadding: 8
+                    bottomPadding: 8
+                    background: Rectangle {
+                        radius: Math.min(6, theme.radius)
+                        color: noteField.activeFocus ? Qt.rgba(1, 1, 1, 0.06) : "transparent"
+                        border.color: noteField.activeFocus ? theme.accent : Qt.rgba(1, 1, 1, 0.08)
+                    }
+                    // Enter adds it and stays here for the next one.
+                    onAccepted: {
+                        if (text.trim() !== "" && backend.addLog({ about: pane.task.id, text: text }) > 0)
+                            text = ""
+                    }
+                    Keys.onEscapePressed: { text = ""; pane.stepsLeft() }
+                }
+            }
+
             ColumnLayout {
                 visible: (pane.task.copies || []).length > 0
                 Layout.fillWidth: true
@@ -271,6 +333,19 @@ Rectangle {
                         wrapMode: Text.Wrap
                         color: "#c4c4cc"
                         Layout.fillWidth: true
+                    }
+                    // The notes about that time, oldest first.
+                    Repeater {
+                        model: entry.modelData.notes || []
+                        NoteLine { required property var modelData; note: modelData; removable: true }
+                    }
+                    Label {
+                        text: qsTr("+ Add a note")
+                        color: noteHover.hovered ? theme.accent : "#6e6e78"
+                        font.pixelSize: 12
+                        opacity: entryHover.hovered || noteHover.hovered ? 1 : 0.6
+                        HoverHandler { id: noteHover; cursorShape: Qt.PointingHandCursor }
+                        TapHandler { onTapped: pane.noteOnTime(entry.modelData) }
                     }
                     HoverHandler { id: entryHover }
                 }

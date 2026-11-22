@@ -218,12 +218,24 @@ HttpResponse WebApi::addTask(const QVariantMap &body) {
     return HttpResponse::json(compact({{"ok", true}, {"id", id}}), 201);
 }
 
-// A note on a context, optionally followed up as a one-time task.
+// A note on a context, optionally followed up as a one-time task. With
+// about (a task) it's on that task's coming time; with done (a completion),
+// on that past time. Either answers with the task as it now stands.
 HttpResponse WebApi::addLog(const QVariantMap &body) {
     if (body.value("text").toString().trimmed().isEmpty())
         return HttpResponse::error(400, "Write the note first");
+    const int about = body.value("about").toInt(), done = body.value("done").toInt();
+    if (about && !m_backend->store().task(about))
+        return HttpResponse::error(404, "No such task");
+    const Completion *time = m_backend->store().completion(done);
+    if (done && !time)
+        return HttpResponse::error(404, "No such time in the history");
+    const int task = time ? time->task : about;
     const int id = m_backend->addLog(body);
     if (!id)
         return HttpResponse::error(500, m_backend->error().isEmpty() ? "Could not save the note" : m_backend->error());
-    return HttpResponse::json(compact({{"ok", true}, {"id", id}}), 201);
+    QJsonObject reply{{"ok", true}, {"id", id}};
+    if (task && m_backend->store().task(task))
+        reply["task"] = taskJson(task);
+    return HttpResponse::json(compact(reply), 201);
 }

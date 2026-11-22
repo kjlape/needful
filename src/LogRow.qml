@@ -3,7 +3,8 @@ import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
 
-// A note in the history: what was noticed, where, and whether it's been followed up.
+// A note in the history: what was noticed, where, and whether it's been
+// followed up. A note about a time of a task says which task.
 Rectangle {
     id: row
     property var entry: ({})
@@ -53,7 +54,8 @@ Rectangle {
             Layout.fillWidth: true
             spacing: 3
             Label {
-                text: row.entry.text || ""
+                textFormat: Text.PlainText
+                text: (row.entry.about ? (row.entry.aboutTitle || "") + " · " : "") + (row.entry.text || "")
                 color: "#ececf0"
                 font.pixelSize: 15
                 wrapMode: Text.Wrap

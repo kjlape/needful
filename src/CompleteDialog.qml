@@ -64,6 +64,26 @@ Dialog {
             }
         }
 
+        // What was noted while working, so it isn't written again here.
+        ColumnLayout {
+            visible: (dialog.task.notesThisTime || []).length > 0
+            Layout.fillWidth: true
+            spacing: 2
+            Label { text: qsTr("Noted this time:"); color: "#a0a0a8"; Layout.fillWidth: true }
+            Repeater {
+                model: dialog.task.notesThisTime || []
+                Label {
+                    required property var modelData
+                    textFormat: Text.PlainText
+                    text: modelData.text
+                    color: "#c4c4cc"
+                    wrapMode: Text.Wrap
+                    leftPadding: 12
+                    Layout.fillWidth: true
+                }
+            }
+        }
+
         TextArea {
             id: note
             Layout.fillWidth: true

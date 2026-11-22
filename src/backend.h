@@ -106,7 +106,13 @@ public:
     Q_INVOKABLE void removeStep(int task, int step);
     // A note on a context; with followUp, a one-time task to deal with it.
     // Fields: context, text, followUp, priority, due (ISO). Returns its id.
+    // With about (a task id) the note is on that task's coming time, and with
+    // done (a completion id) on that past time; either takes the context
+    // from the task, and an unknown one adds nothing.
     Q_INVOKABLE int addLog(const QVariantMap &fields);
+    // A task's history, newest first, each time with the notes about it.
+    // It works for a task since deleted, whose history stays.
+    Q_INVOKABLE QVariantList historyOf(int taskId) const;
     Q_INVOKABLE void removeLog(int id);
     Q_INVOKABLE void undo();
     Q_INVOKABLE void redo();
@@ -146,6 +152,7 @@ private:
     QVariantMap describe(const Completion &done) const;
     QVariantList stepsOf(const Task &task) const;
     QVariantMap describe(const LogEntry &entry) const;
+    QVariantList notesOf(int taskId, int round) const;
     QString dueText(const Task &task, const QDate &today) const;
     QString scheduleText(const Task &task) const;
     QString seasonText(const Task &task) const;

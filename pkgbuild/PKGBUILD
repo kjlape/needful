@@ -1,5 +1,5 @@
 pkgname=needful
-pkgver=0.8.3
+pkgver=0.9.0
 pkgrel=1
 pkgdesc='Routine tasks, most needful first'
 arch=('x86_64' 'aarch64')

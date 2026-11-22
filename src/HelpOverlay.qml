@@ -18,6 +18,7 @@ Rectangle {
         ["Shift+S", qsTr("Skip this time, with why")],
         ["N", qsTr("New task")],
         ["L", qsTr("Log a note on a context")],
+        ["Shift+L", qsTr("Note on this time of a task, or the time picked in History")],
         ["E / Enter", qsTr("Edit")],
         ["X / Delete", qsTr("Delete")],
         ["J / K", qsTr("Next / previous")],

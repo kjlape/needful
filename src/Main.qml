@@ -23,13 +23,18 @@ ApplicationWindow {
     readonly property bool compact: width < 860
     readonly property bool detailFits: width >= (compact ? 620 : 860)
     property int selectedId: 0
+    // In History, the task the picked entry is about, shown in the detail
+    // pane; the list's own shortcuts still act on the entry.
+    property int historyTaskId: 0
     readonly property var selected: {
         // Re-read whenever the lists change, so the detail pane stays current.
         backend.items
         translator.language
-        return selectedId && backend.view !== "history" ? backend.task(selectedId) : ({})
+        const id = backend.view === "history" ? historyTaskId : selectedId
+        return id ? backend.task(id) : ({})
     }
-    readonly property bool hasSelection: selected.id !== undefined
+    readonly property bool shown: selected.id !== undefined
+    readonly property bool hasSelection: shown && backend.view !== "history"
     // Single-key shortcuts stand down while a dialog is open.
     readonly property bool dialogOpen: helpVisible || editor.visible || completeDialog.visible
                                        || snoozeDialog.visible || contextDialog.visible || confirm.visible
@@ -59,6 +64,7 @@ ApplicationWindow {
         i = Math.max(0, Math.min(items.length - 1, i))
         list.currentIndex = i
         selectedId = items[i].kind === "task" ? items[i].id : 0
+        historyTaskId = items[i].kind === "log" ? items[i].about || 0 : items[i].kind === "completion" ? items[i].task : 0
         list.positionViewAtIndex(i, ListView.Contain)
     }
 
@@ -108,6 +114,24 @@ ApplicationWindow {
             backend.checkStep(selectedId, next.id, true)
     }
     function addStepSelected() { if (hasSelection && detail.visible) detail.addStep() }
+    // Shift+L: a note on the selected task's coming time, or in History on
+    // the time picked; anything else is a note on the context.
+    function noteOnSelected() {
+        if (backend.view === "history") {
+            const entry = backend.items[list.currentIndex]
+            if (entry && entry.kind === "completion")
+                logDialog.openOn(entry)
+            else
+                logDialog.openFor(backend.contextFilter)
+        } else if (hasSelection) {
+            logDialog.openAbout(selected)
+        } else {
+            logDialog.openFor(backend.contextFilter)
+        }
+    }
+    function removeNote(id) {
+        confirm.ask(qsTr("Remove this note? Its follow-up task, if any, stays."), qsTr("Remove"), () => backend.removeLog(id))
+    }
     function deleteSelected() {
         if (backend.view === "history" && list.currentIndex >= 0) {
             const entry = backend.items[list.currentIndex]
@@ -147,6 +171,7 @@ ApplicationWindow {
     Shortcut { sequence: "0"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: backend.contextFilter = 0 }
     Shortcut { sequence: "U"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: win.cycleUniverse() }
     Shortcut { sequence: "L"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: logDialog.openFor(backend.contextFilter) }
+    Shortcut { sequence: "Shift+L"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: win.noteOnSelected() }
     Shortcut { sequence: "C"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: contextDialog.openForNew(backend.contextFilter) }
     Shortcut { sequence: "Shift+C"; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: contextDialog.openForNew(0) }
     Shortcut { sequences: ["/", StandardKey.Find]; enabled: !win.dialogOpen; context: Qt.ApplicationShortcut; onActivated: search.forceActiveFocus() }
@@ -437,15 +462,22 @@ ApplicationWindow {
                 Layout.preferredWidth: win.compact ? 280 : win.width < 1100 ? 300 : 360
                 Layout.fillHeight: true
                 // A very narrow window gives the list the room; Enter still edits.
-                visible: win.hasSelection && win.detailFits
+                visible: win.shown && win.detailFits
                 task: win.selected
-                onCompleteRequested: win.completeSelected()
-                onTodayRequested: win.todaySelected()
-                onSnoozeRequested: win.snoozeSelected()
-                onSkipRequested: win.skipSelected()
-                onEditRequested: win.editSelected()
-                onDeleteRequested: win.deleteSelected()
+                // The pane's buttons act on the task it shows, in History too.
+                onCompleteRequested: completeDialog.openFor(win.selected)
+                onTodayRequested: backend.toggleToday(win.selected.id)
+                onSnoozeRequested: snoozeDialog.openFor(win.selected)
+                onSkipRequested: completeDialog.openFor(win.selected, true)
+                onEditRequested: editor.openFor(win.selected)
+                onDeleteRequested: {
+                    const t = win.selected
+                    confirm.ask(qsTr("Delete “%1”? What you've done stays in the history.").arg(t.title),
+                                qsTr("Delete"), () => backend.removeTask(t.id))
+                }
                 onStepsLeft: list.forceActiveFocus()
+                onRemoveNote: id => win.removeNote(id)
+                onNoteOnTime: entry => logDialog.openOn(entry)
                 onRemoveCompletion: id => confirm.ask(qsTr("Remove this entry from the history?"),
                                                      qsTr("Remove"), () => backend.removeCompletion(id))
             }

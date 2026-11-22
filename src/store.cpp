@@ -3,6 +3,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSaveFile>
@@ -106,7 +107,8 @@ QByteArray Store::toJson() const {
                          {"title", c.title},
                          {"context", c.context},
                          {"at", c.at.toString(Qt::ISODateWithMs)},
-                         {"note", c.note}};
+                         {"note", c.note},
+                         {"round", c.round}};
         // Only on skips, so the many completions from before skipping stay as they were.
         if (c.skipped)
             done["skipped"] = true;
@@ -122,12 +124,20 @@ QByteArray Store::toJson() const {
         }
         completionArray.append(done);
     }
-    for (const auto &e : log)
-        logArray.append(QJsonObject{{"id", e.id},
-                                    {"context", e.context},
-                                    {"at", e.at.toString(Qt::ISODateWithMs)},
-                                    {"text", e.text},
-                                    {"task", e.task}});
+    for (const auto &e : log) {
+        QJsonObject entry{{"id", e.id},
+                          {"context", e.context},
+                          {"at", e.at.toString(Qt::ISODateWithMs)},
+                          {"text", e.text},
+                          {"task", e.task}};
+        // Only on notes about a time, so context notes stay as they were.
+        if (e.about) {
+            entry["about"] = e.about;
+            entry["round"] = e.round;
+            entry["aboutTitle"] = e.aboutTitle;
+        }
+        logArray.append(entry);
+    }
     for (const auto &s : steps)
         stepArray.append(QJsonObject{{"id", s.id},
                                      {"routine", s.routine},
@@ -226,16 +236,44 @@ bool Store::fromJson(const QByteArray &json, QString *error) {
         t.round = std::max(0, o.value("round").toInt());
         loaded.tasks.append(t);
     }
+    QSet<int> unnumbered; // Completions from before they kept their round, by index.
     for (const auto &value : root.value("completions").toArray()) {
         const QJsonObject o = value.toObject();
         Completion c{o.value("id").toInt(), o.value("task").toInt(), o.value("title").toString(),
                      o.value("context").toInt(), QDateTime::fromString(o.value("at").toString(), Qt::ISODate),
-                     o.value("note").toString(), o.value("skipped").toBool()};
+                     o.value("note").toString(), o.value("skipped").toBool(), {}, 0};
         for (const auto &step : o.value("steps").toArray()) {
             const QJsonObject s = step.toObject();
             c.steps.append({s.value("text").toString(), s.value("checked").toBool(), s.value("once").toBool()});
         }
+        if (o.contains("round"))
+            c.round = o.value("round").toInt();
+        else
+            unnumbered.insert(loaded.completions.size());
         loaded.completions.append(c);
+    }
+    // Older completions count back from the task's round, newest first: the
+    // one before the coming time, then the one before that. Removing one
+    // shifts those older than it, which is accepted rather than repaired.
+    if (!unnumbered.isEmpty()) {
+        QHash<int, QList<int>> byTask;
+        for (int i = 0; i < loaded.completions.size(); ++i)
+            byTask[loaded.completions[i].task].append(i);
+        for (auto it = byTask.begin(); it != byTask.end(); ++it) {
+            QList<int> &order = it.value();
+            std::sort(order.begin(), order.end(), [&](int a, int b) {
+                const Completion &ca = loaded.completions[a], &cb = loaded.completions[b];
+                return ca.at != cb.at ? ca.at > cb.at : ca.id > cb.id;
+            });
+            const Task *t = loaded.task(it.key());
+            int expected = t ? t->round - 1 : int(order.size()) - 1;
+            for (int i : order) {
+                Completion &c = loaded.completions[i];
+                if (unnumbered.contains(i))
+                    c.round = expected;
+                expected = c.round - 1;
+            }
+        }
     }
     for (const auto &value : root.value("steps").toArray()) {
         const QJsonObject o = value.toObject();
@@ -252,7 +290,8 @@ bool Store::fromJson(const QByteArray &json, QString *error) {
         const QJsonObject o = value.toObject();
         loaded.log.append({o.value("id").toInt(), o.value("context").toInt(),
                            QDateTime::fromString(o.value("at").toString(), Qt::ISODate), o.value("text").toString(),
-                           o.value("task").toInt()});
+                           o.value("task").toInt(), o.value("about").toInt(), o.value("round").toInt(),
+                           o.value("aboutTitle").toString()});
     }
     const QJsonObject highest = root.value("reserved").toObject();
     for (auto it = highest.begin(); it != highest.end(); ++it)
@@ -544,7 +583,7 @@ bool Store::complete(int id, const QDateTime &at, const QString &note, const QDa
     Task *t = task(id);
     if (!t)
         return false;
-    completions.append({nextId("completions"), t->id, t->title, t->context, at, note.trimmed(), false, snapshot(id)});
+    completions.append({nextId("completions"), t->id, t->title, t->context, at, note.trimmed(), false, snapshot(id), t->round});
     resetChecklist(id);
     t->snoozedUntil = {};
     t->today = {};
@@ -567,7 +606,7 @@ bool Store::skip(int id, const QDateTime &at, const QString &reason, const QDate
     Task *t = task(id);
     if (!t)
         return false;
-    completions.append({nextId("completions"), t->id, t->title, t->context, at, reason.trimmed(), true, snapshot(id)});
+    completions.append({nextId("completions"), t->id, t->title, t->context, at, reason.trimmed(), true, snapshot(id), t->round});
     resetChecklist(id);
     t->snoozedUntil = {};
     t->today = {};
@@ -595,8 +634,54 @@ int Store::addLog(int contextId, const QDateTime &at, const QString &text) {
     if (trimmed.isEmpty())
         return 0;
     const int id = nextId("log");
-    log.append({id, context(contextId) ? contextId : 0, at, trimmed, 0});
+    log.append({id, context(contextId) ? contextId : 0, at, trimmed, 0, 0, 0, {}});
     return id;
+}
+
+int Store::addTaskNote(int taskId, const QDateTime &at, const QString &text) {
+    const Task *t = task(taskId);
+    const QString trimmed = text.trimmed();
+    if (!t || trimmed.isEmpty())
+        return 0;
+    const int id = nextId("log");
+    log.append({id, t->context, at, trimmed, 0, t->id, t->round, t->title});
+    return id;
+}
+
+int Store::addCompletionNote(int completionId, const QDateTime &at, const QString &text) {
+    const Completion *c = completion(completionId);
+    const QString trimmed = text.trimmed();
+    if (!c || trimmed.isEmpty())
+        return 0;
+    const int id = nextId("log");
+    log.append({id, context(c->context) ? c->context : 0, at, trimmed, 0, c->task, c->round, c->title});
+    return id;
+}
+
+QList<LogEntry> Store::notesOn(int taskId, int round) const {
+    QList<LogEntry> found;
+    for (const auto &e : log)
+        if (taskId && e.about == taskId && e.round == round)
+            found.append(e);
+    std::stable_sort(found.begin(), found.end(), [](const LogEntry &a, const LogEntry &b) { return a.at < b.at; });
+    return found;
+}
+
+const Completion *Store::completion(int id) const {
+    for (const auto &c : completions)
+        if (id && c.id == id)
+            return &c;
+    return nullptr;
+}
+
+// Done twice on two computers before either heard of the other leaves two
+// completions of one time; the notes go with the later.
+const Completion *Store::completionAt(int taskId, int round) const {
+    const Completion *found = nullptr;
+    for (const auto &c : completions)
+        if (taskId && c.task == taskId && c.round == round && (!found || c.at > found->at))
+            found = &c;
+    return found;
 }
 
 bool Store::removeLog(int id) {

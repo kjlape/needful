@@ -39,6 +39,13 @@ one is. Pick from the top, and trust that nothing is forgotten.
 - **Notes** (`L`) log anything you notice on a context, like a squeak at low
   speed, interleaved with that context's history. Mark one to follow up and
   it becomes a one-time task in that context, ranked with everything else.
+- **Notes on a time** (`Shift+L`) belong to one time of a task: "the socket's
+  in the garage" while you work, "the filter was grey two weeks later"
+  afterwards. Notes on the coming time show in the task's detail and in the
+  done dialog, so you don't write them twice, and go into history with it
+  when it's done or skipped. In History, `Shift+L` (or "Add a note" in the
+  detail) adds one to a time already past. They're Log entries too, shown in
+  the context's history as "Oil change · Drain plug was stripped".
 
 ## Keys
 
@@ -52,6 +59,7 @@ one is. Pick from the top, and trust that nothing is forgotten.
 | `Shift+S` | Skip this time, with why |
 | `N` | New task |
 | `L` | Log a note on a context, optionally to follow up |
+| `Shift+L` | Note on this time of the task, or in History on the time picked |
 | `E` / `Enter` | Edit |
 | `X` / `Delete` | Delete (history stays) |
 | `J` / `K`, `↓` / `↑` | Next / previous |
@@ -82,7 +90,10 @@ needful check 3 1                            # check step 1; --undo unchecks
 needful done 3 --note "Mobil 1 5W-20, 84,210 mi"   # unchecked steps need --yes
 needful skip 5 --reason "Rained all weekend"
 needful log "Squeak from the front left at low speed" --context CR-V --follow-up
+needful log "Drain plug was stripped" --task 3     # this time of the task; --last for the last time
+needful log "Filter already grey" --done 41        # a past time, numbered in history --task
 needful history --context "White Honda CR-V" --search oil
+needful history --task 3                           # each time, numbered, with its notes
 needful contexts add "Automotive/White Honda CR-V"
 needful skill install   # teaches coding agents to use it
 ```
@@ -272,7 +283,9 @@ a universe: anyone who has joined it can change anything in it.
 Upcoming, and History by context, marking things done with a note, pulling
 into today, snoozing, logging a note, and quick tasks. Checklists work there
 in full: tap a step to check it, add steps for this time as you find them,
-and give a quick task its steps, one per line. A tap shows at once and goes
+and give a quick task its steps, one per line. Notes on a time work there
+too: note this time under the checklist as you go, or add one to a time in
+the task's history. A tap shows at once and goes
 to the desktop behind it; if it can't get there, the box goes back and the
 page says so. It installs to the home
 screen as an app. It listens on 127.0.0.1:8787 only, and has no password, so

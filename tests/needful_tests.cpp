@@ -707,6 +707,218 @@ private slots:
         QCOMPARE(backend.store().logEntry(squeak)->context, car);
     }
 
+    // Notes on one time of a task: kept on the coming time while working,
+    // moved into history with it when it's done, and added to past times.
+    void notesOnATimeGoWithIt()
+    {
+        QTemporaryDir dir;
+        Backend backend(dir.filePath("needful.json"));
+        backend.setToday(saturday);
+        const int tacoma = backend.addContext("Tacoma", 0), crv = backend.addContext("CR-V", 0);
+        const int oil = backend.saveTask({{"title", "Oil change"}, {"contexts", QVariantList{tacoma, crv}},
+                                          {"scheduleKind", "every"}, {"unit", "month"}});
+        // A routine: the Tacoma's copy and the CR-V's each have their own times.
+        const QList<int> copies = backend.store().copies(backend.store().task(oil)->routine);
+        QCOMPARE(copies.size(), 2);
+        const int other = copies.first() == oil ? copies.last() : copies.first();
+
+        QVERIFY(!backend.addLog({{"about", 999}, {"text", "Nowhere"}}));
+        QVERIFY(!backend.addLog({{"about", oil}, {"text", "  "}}));
+        const int socket = backend.addLog({{"about", oil}, {"text", "Socket's in the garage, not the truck"}});
+        QVERIFY(socket);
+        const LogEntry *entry = backend.store().logEntry(socket);
+        QCOMPARE(entry->about, oil);
+        QCOMPARE(entry->context, backend.store().task(oil)->context);
+        QCOMPARE(backend.task(oil)["notesThisTime"].toList().size(), 1);
+        QCOMPARE(backend.task(other)["notesThisTime"].toList().size(), 0);
+
+        // The main Log names the task.
+        backend.setView("history");
+        QVariantMap logged = backend.items().first().toMap();
+        QCOMPARE(logged["kind"].toString(), QString("log"));
+        QCOMPARE(logged["aboutTitle"].toString(), QString("Oil change"));
+        QVERIFY(logged["thisTime"].toBool());
+
+        const int plug = backend.addLog({{"about", oil}, {"text", "Drain plug was stripped"}, {"followUp", true}});
+        QVERIFY(backend.store().logEntry(plug)->task); // Follow-ups still work.
+        backend.complete(oil, "Mobil 1 5W-30, 91,040 mi");
+        QVariantMap done = backend.task(oil)["history"].toList().first().toMap();
+        QCOMPARE(done["note"].toString(), QString("Mobil 1 5W-30, 91,040 mi"));
+        QVariantList notes = done["notes"].toList();
+        QCOMPARE(notes.size(), 2);
+        QCOMPARE(notes[0].toMap()["text"].toString(), QString("Socket's in the garage, not the truck"));
+        QVERIFY(backend.task(oil)["notesThisTime"].toList().isEmpty());
+
+        // Undo puts the time back as the coming one, notes and all.
+        backend.undo();
+        QCOMPARE(backend.task(oil)["notesThisTime"].toList().size(), 2);
+        QVERIFY(backend.task(oil)["history"].toList().isEmpty());
+        backend.redo();
+        QCOMPARE(backend.task(oil)["history"].toList().size(), 1);
+
+        // A note added later, on that past time.
+        const int doneId = done["id"].toInt();
+        QVERIFY(!backend.addLog({{"done", 999}, {"text", "Nowhere"}}));
+        const int seep = backend.addLog({{"done", doneId}, {"text", "Slight seep at the plug"}});
+        QVERIFY(seep);
+        QCOMPARE(backend.task(oil)["history"].toList().first().toMap()["notes"].toList().size(), 3);
+        QVERIFY(backend.task(oil)["notesThisTime"].toList().isEmpty());
+        backend.skip(oil, "Away");
+        QCOMPARE(backend.task(oil)["history"].toList().size(), 2);
+        QCOMPARE(backend.task(oil)["history"].toList().first().toMap()["notes"].toList().size(), 0);
+        QCOMPARE(backend.task(oil)["history"].toList().last().toMap()["notes"].toList().size(), 3);
+
+        // It all survives saving; context notes stay as they were.
+        const int squeak = backend.addLog({{"context", crv}, {"text", "Squeak from the front left"}});
+        Store loaded;
+        QVERIFY(loaded.load(dir.filePath("needful.json")));
+        QCOMPARE(loaded.toJson(), backend.store().toJson());
+        QCOMPARE(loaded.logEntry(squeak)->about, 0);
+        QVERIFY(!QJsonDocument::fromJson(loaded.toJson()).object()["log"].toArray().last().toObject().contains("about"));
+
+        // Removing the completion keeps its notes as context notes naming the task.
+        backend.removeCompletion(doneId);
+        QVERIFY(backend.store().logEntry(seep));
+        backend.setView("history");
+        bool named = false;
+        for (const auto &item : backend.items())
+            if (item.toMap()["id"].toInt() == seep && item.toMap()["kind"] == "log")
+                named = item.toMap()["aboutTitle"] == "Oil change" && !item.toMap()["thisTime"].toBool() &&
+                        item.toMap()["aboutDone"].toInt() == 0;
+        QVERIFY(named);
+
+        // Removing the task keeps its notes, under the title they were about.
+        backend.addLog({{"about", oil}, {"text", "Buy two filters"}});
+        backend.removeTask(oil);
+        int left = 0;
+        for (const auto &item : backend.items())
+            if (item.toMap()["kind"] == "log" && item.toMap()["about"].toInt() == oil) {
+                ++left;
+                QCOMPARE(item.toMap()["aboutTitle"].toString(), QString("Oil change"));
+            }
+        QCOMPARE(left, 4);
+        QCOMPARE(backend.historyOf(oil).size(), 1);
+    }
+
+    // Completions from before they kept their round get one from the order
+    // of the task's history, so notes can be put on them.
+    void oldCompletionsGetTheirTimes()
+    {
+        const QByteArray old = R"({"needful": 1, "contexts": [], "routines": [],
+            "tasks": [{"id": 1, "title": "Mow", "schedule": {"kind": "every", "every": 1, "unit": "week"}, "round": 1}],
+            "completions": [
+                {"id": 1, "task": 1, "title": "Mow", "context": 0, "at": "2026-06-20T10:00:00", "note": "First"},
+                {"id": 2, "task": 1, "title": "Mow", "context": 0, "at": "2026-06-27T10:00:00", "note": "Second"},
+                {"id": 3, "task": 9, "title": "Gone", "context": 0, "at": "2026-06-27T10:00:00", "note": ""}],
+            "log": [{"id": 1, "context": 0, "at": "2026-06-21T10:00:00", "text": "Old note", "task": 0}]})";
+        Store store;
+        QVERIFY(store.fromJson(old));
+        QCOMPARE(store.completion(2)->round, 0);
+        QCOMPARE(store.completion(1)->round, -1);
+        QCOMPARE(store.completion(3)->round, 0);
+        QCOMPARE(store.log.first().about, 0); // Old notes stay on the context.
+        const int note = store.addCompletionNote(1, QDateTime(saturday, QTime(9, 0)), "Too wet to bag");
+        QCOMPARE(store.notesOn(1, -1).size(), 1);
+        QCOMPARE(store.notesOn(1, -1).first().id, note);
+        Store again;
+        QVERIFY(again.fromJson(store.toJson()));
+        QCOMPARE(again.toJson(), store.toJson());
+        QVERIFY(store.complete(1, QDateTime(saturday, QTime(10, 0)), {}));
+        QCOMPARE(store.history(1).first().round, 1);
+    }
+
+    // A note on the coming time, written on the laptop while the desktop
+    // marks the task done, lands on the desktop's completion.
+    void syncPutsANoteOnTheTimeItWasWrittenOn()
+    {
+        QTemporaryDir dir;
+        const QString aData = dir.filePath("a.json"), bData = dir.filePath("b.json");
+        const QString aFolder = dir.filePath("a-sync"), bFolder = dir.filePath("b-sync");
+        int oil = 0;
+        {
+            Backend a(aData);
+            a.setToday(saturday);
+            oil = a.saveTask({{"title", "Oil change"}, {"scheduleKind", "every"}, {"unit", "month"}});
+        }
+        SyncFolder::Setup setup;
+        QString error;
+        QVERIFY(SyncFolder::setup(aData, aFolder, "desktop", QDateTime(saturday, QTime(12, 0)), &setup, &error));
+        syncTool(aFolder, bFolder);
+        QVERIFY(SyncFolder::setup(bData, bFolder, "laptop", QDateTime(saturday, QTime(12, 0)), &setup, &error));
+        Backend a(aData), b(bData);
+        a.setToday(saturday);
+        b.setToday(saturday);
+
+        a.complete(oil, "Done at the shop");
+        b.setToday(saturday.addDays(1));
+        b.addLog({{"about", oil}, {"text", "Drain plug was stripped"}});
+
+        syncTool(aFolder, bFolder);
+        b.setToday(saturday);
+        QTRY_COMPARE(a.store().toJson(), b.store().toJson());
+        const QVariantList history = a.task(oil)["history"].toList();
+        QCOMPARE(history.size(), 1);
+        QCOMPARE(history.first().toMap()["notes"].toList().size(), 1);
+        QVERIFY(a.task(oil)["notesThisTime"].toList().isEmpty());
+    }
+
+    void commandLineNotesOnATime()
+    {
+        QTemporaryDir dir;
+        const QString data = dir.filePath("needful.json");
+        QCOMPARE(runCli({"needful", "contexts", "add", "Tacoma", "--data", data}), 0);
+        QCOMPARE(runCli({"needful", "add", "Oil change", "--every", "6m", "--context", "Tacoma", "--data", data}), 0);
+        const int oil = taskNamed(Backend(data).store(), "Oil change");
+        const QString id = QString::number(oil);
+        QCOMPARE(runCli({"needful", "log", "Too early", "--task", id, "--last", "--data", data}), 1);
+        QCOMPARE(runCli({"needful", "log", "Wrong", "--task", id, "--context", "Tacoma", "--data", data}), 1);
+        QCOMPARE(runCli({"needful", "log", "Wrong", "--task", "999", "--data", data}), 1);
+        QCOMPARE(runCli({"needful", "log", "Wrong", "--last", "--data", data}), 1);
+        QCOMPARE(runCli({"needful", "log", "Socket's in the garage", "--task", id, "--data", data}), 0);
+        QCOMPARE(Backend(data).task(oil)["notesThisTime"].toList().size(), 1);
+        QCOMPARE(Backend(data).store().log.first().context, Backend(data).store().task(oil)->context);
+        QCOMPARE(runCli({"needful", "done", id, "--note", "Mobil 1", "--data", data}), 0);
+        QCOMPARE(runCli({"needful", "log", "Slight seep at the plug", "--task", id, "--last", "--data", data}), 0);
+        const int time = Backend(data).store().history(oil).first().id;
+        QCOMPARE(runCli({"needful", "log", "Filter already grey", "--done", QString::number(time), "--data", data}), 0);
+        QCOMPARE(runCli({"needful", "log", "Wrong", "--done", "999", "--data", data}), 1);
+        QCOMPARE(runCli({"needful", "log", "Wrong", "--done", QString::number(time), "--task", id, "--data", data}), 1);
+        QCOMPARE(Backend(data).historyOf(oil).first().toMap()["notes"].toList().size(), 3);
+        QCOMPARE(runCli({"needful", "history", "--task", id, "--data", data}), 0);
+        QCOMPARE(runCli({"needful", "history", "--task", id, "--json", "--data", data}), 0);
+        QCOMPARE(runCli({"needful", "history", "--data", data}), 0);
+    }
+
+    void webApiTakesNotesOnATime()
+    {
+        QTemporaryDir dir;
+        Backend backend(dir.filePath("needful.json"));
+        backend.setToday(saturday);
+        const int mow = backend.saveTask({{"title", "Mow"}, {"scheduleKind", "every"}, {"unit", "week"}});
+        WebApi api(&backend);
+        auto post = [&api](const QString &path, const QByteArray &body) {
+            HttpRequest request;
+            request.method = "POST";
+            request.path = path;
+            request.headers.insert("host", "localhost:8787");
+            request.headers.insert("content-type", "application/json");
+            request.body = body;
+            return api.handle(request);
+        };
+        auto json = [](const HttpResponse &response) { return QJsonDocument::fromJson(response.body).object(); };
+        const HttpResponse noted = post("/api/log", "{\"about\":" + QByteArray::number(mow) + ",\"text\":\"Too wet to bag\"}");
+        QCOMPARE(noted.status, 201);
+        QCOMPARE(json(noted).value("task").toObject().value("notesThisTime").toArray().size(), 1);
+        QCOMPARE(post("/api/log", "{\"about\":999,\"text\":\"x\"}").status, 404);
+        QCOMPARE(post("/api/log", "{\"done\":999,\"text\":\"x\"}").status, 404);
+        QCOMPARE(post(QString("/api/task/%1/done").arg(mow), "{}").status, 200);
+        const int time = backend.store().history(mow).first().id;
+        const HttpResponse later = post("/api/log", "{\"done\":" + QByteArray::number(time) + ",\"text\":\"Missed the corner\"}");
+        QCOMPARE(later.status, 201);
+        const QJsonArray history = json(later).value("task").toObject().value("history").toArray();
+        QCOMPARE(history.first().toObject().value("notes").toArray().size(), 2);
+    }
+
     void undoTakesBackANoteAndItsFollowUp()
     {
         QTemporaryDir dir;

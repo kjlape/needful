@@ -243,6 +243,17 @@ form .check input { width: 22px; min-height: 22px; accent-color: var(--accent); 
 .history-list h3 { margin: 0 0 8px; font-size: 15px; color: var(--soft); }
 .history-entry { padding: 6px 0; }
 .history-entry b { font-weight: 600; }
+.notes-box { padding-top: 8px; }
+.notes-head { margin: 0 14px; font-size: 13px; }
+.notes-list .note-line { display: flex; gap: 10px; padding: 4px 14px; font-size: 15px; color: var(--soft); white-space: pre-wrap; }
+.history-entry .notes-list .note-line { padding: 2px 0; font-size: 14px; }
+.note-line.sending { opacity: 0.6; }
+.history-entry .add-note { padding: 4px 0; min-height: 44px; }
+.link { background: none; border: 0; padding: 6px 0; color: var(--dim); font-size: 14px; min-height: 36px; }
+.noted { font-size: 15px; }
+.noted p { margin: 0 0 4px; }
+.noted ul { margin: 0; padding-left: 20px; color: var(--soft); }
+button.row.history { width: 100%; text-align: left; font: inherit; color: inherit; }
 
 .toast {
   position: fixed;

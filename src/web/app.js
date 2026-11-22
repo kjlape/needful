@@ -66,6 +66,11 @@ const S = {
   doneAnyway: "Done anyway",
   checkFailed: "Couldn't reach Needful, so “%1” is back how it was.",
   stepFailed: "Couldn't add “%1”.",
+  notesThisTime: "Notes this time",
+  noteThisTime: "Note this time",
+  notedThisTime: "Noted this time:",
+  addNote: "Add a note",
+  noteFailed: "Couldn't save the note “%1”.",
   snoozeChoices: [["Tomorrow", 1], ["3 days", 3], ["1 week", 7], ["2 weeks", 14], ["1 month", 30], ["3 months", 91]],
   nextChoices: [["1 week", 7, "d"], ["2 weeks", 14, "d"], ["1 month", 1, "m"], ["3 months", 3, "m"], ["6 months", 6, "m"], ["1 year", 12, "m"]],
 };
@@ -140,6 +145,10 @@ function shownChecked(taskId, step) {
   const key = stepKey(taskId, step.id);
   return pending.has(key) ? pending.get(key) : step.checked;
 }
+
+// Notes on a task's coming time still on their way, by task id. Opening the
+// task again before the desktop answers still shows them.
+const pendingNotes = new Map();
 
 // "Buy a cabin filter · 0/2", or "2/2" once every box is ticked.
 function stepsSummary(task) {
@@ -248,11 +257,15 @@ function taskRow(task) {
 function historyRow(item, extra) {
   const isLog = item.kind === "log";
   const text = isLog ? (item.text || item.note || "") : item.note;
-  return h("div", { class: "row history " + (extra || "") + (isLog ? " log" : "") },
+  // A note about a time of a task opens the task, whose history shows it
+  // under that time.
+  const opens = isLog && item.about && item.aboutExists;
+  return h(opens ? "button" : "div", { type: opens ? "button" : null, class: "row history " + (extra || "") + (isLog ? " log" : ""),
+                                       onclick: opens ? () => openTask(item.about) : null },
     h("span", { class: isLog ? "mark log" : item.skipped ? "mark done skipped" : "mark done", "aria-hidden": "true",
                 text: isLog ? "✎" : item.skipped ? "↷" : "✓" }),
     h("span", { class: "row-body" },
-      h("span", { class: "row-title" }, isLog ? S.log : item.title,
+      h("span", { class: "row-title" }, isLog ? item.aboutTitle || S.log : item.title,
         item.skipped ? h("span", { class: "badge", text: S.skippedMark }) : null,
         isLog && item.task ? h("span", { class: "badge",
           text: item.followUpDone ? S.followedUp : S.followUpDue.replace("%1", item.followUpDueText || "") }) : null),
@@ -318,11 +331,7 @@ async function openTask(id) {
 
   const history = h("div", { class: "history-list" }, h("h3", { text: S.history }),
     (task.history || []).length
-      ? task.history.slice(0, 8).map((entry) => h("div", { class: "history-entry" },
-          h("b", { text: entry.date }), " ", h("span", { class: "dim", text: entry.ago }),
-          entry.skipped ? h("span", { class: "badge", text: S.skippedMark }) : null,
-          (entry.steps || []).length ? h("div", { class: "row-steps", text: doneSteps(entry) }) : null,
-          entry.note ? h("div", { class: "notes", text: entry.note }) : null))
+      ? task.history.slice(0, 8).map((entry) => pastTime(entry))
       : h("p", { class: "dim", text: S.notDoneYet }));
 
   openSheet(sheet,
@@ -333,6 +342,7 @@ async function openTask(id) {
     task.notes ? h("p", { class: "notes", text: task.notes }) : null,
     also,
     steps,
+    notesThisTime(task),
     h("div", { id: "task-panel" }, actions),
     history);
 }
@@ -415,6 +425,102 @@ function checklist(task, sheet) {
   return h("div", { class: "checklist" }, list, form);
 }
 
+// "Nov 21  Socket's in the garage" for each note about a time.
+function noteLines(notes) {
+  return notes.map((note) => h("div", { class: "note-line" + (note.sending ? " sending" : "") },
+    note.date ? h("span", { class: "dim", text: note.date }) : null, h("span", { text: note.text })));
+}
+
+// A field for one note after another: Enter sends it, it shows at once, and
+// the keyboard stays up for the next.
+function noteField(label, submit) {
+  const field = h("input", { type: "text", name: "note", placeholder: label, enterkeyhint: "send",
+                             autocomplete: "off", "aria-label": label });
+  return h("form", {
+    class: "add-step add-note",
+    onsubmit: (event) => {
+      event.preventDefault();
+      const text = field.value.trim();
+      if (!text) return;
+      field.value = "";
+      field.focus();
+      submit(text);
+    },
+  }, h("span", { class: "box add", "aria-hidden": "true", text: "+" }), field);
+}
+
+// What's been noticed this time, under the checklist. A note still on its
+// way stays listed through any refresh until the desktop answers.
+function notesThisTime(task) {
+  const known = task.notesThisTime || [];
+  // One the desktop already has, though its answer hasn't come, shows once.
+  const waiting = (pendingNotes.get(task.id) || []).filter((n) => !known.some((k) => k.text === n.text));
+  task.notesThisTime = known.concat(waiting);
+  const list = h("div", { class: "notes-list" });
+  const show = () => list.replaceChildren(...noteLines(task.notesThisTime));
+  show();
+  const form = noteField(S.noteThisTime, (text) => {
+    const note = { text, date: "", sending: true };
+    task.notesThisTime.push(note);
+    if (!pendingNotes.has(task.id)) pendingNotes.set(task.id, []);
+    pendingNotes.get(task.id).push(note);
+    show();
+    const settle = () => {
+      const left = (pendingNotes.get(task.id) || []).filter((n) => n !== note);
+      if (left.length) pendingNotes.set(task.id, left); else pendingNotes.delete(task.id);
+    };
+    send(() => api("/api/log", { about: task.id, text })).then((reply) => {
+      settle();
+      note.sending = false;
+      const saved = ((reply.task || {}).notesThisTime || []).find((n) => n.id === reply.id);
+      if (saved) Object.assign(note, saved);
+      show();
+    }, () => {
+      settle();
+      task.notesThisTime.splice(task.notesThisTime.indexOf(note), 1);
+      show();
+      toast(S.noteFailed.replace("%1", text));
+    });
+  });
+  return h("div", { class: "checklist notes-box" }, h("p", { class: "notes-head dim", text: S.notesThisTime }), list, form);
+}
+
+// One time in the task's history, with the notes about it. Tapping "Add a
+// note" opens a field for that time.
+function pastTime(entry) {
+  const notes = h("div", { class: "notes-list" });
+  const show = () => notes.replaceChildren(...noteLines(entry.notes || []));
+  show();
+  const add = h("button", { type: "button", class: "link", text: "+ " + S.addNote });
+  add.addEventListener("click", () => {
+    const form = noteField(S.addNote, (text) => {
+      const note = { text, date: "", sending: true };
+      (entry.notes = entry.notes || []).push(note);
+      show();
+      send(() => api("/api/log", { done: entry.id, text })).then((reply) => {
+        note.sending = false;
+        const time = ((reply.task || {}).history || []).find((c) => c.id === entry.id);
+        const saved = ((time || {}).notes || []).find((n) => n.id === reply.id);
+        if (saved) Object.assign(note, saved);
+        show();
+      }, () => {
+        entry.notes.splice(entry.notes.indexOf(note), 1);
+        show();
+        toast(S.noteFailed.replace("%1", text));
+      });
+    });
+    add.replaceWith(form);
+    form.querySelector("input").focus();
+  });
+  return h("div", { class: "history-entry" },
+    h("b", { text: entry.date }), " ", h("span", { class: "dim", text: entry.ago }),
+    entry.skipped ? h("span", { class: "badge", text: S.skippedMark }) : null,
+    (entry.steps || []).length ? h("div", { class: "row-steps", text: doneSteps(entry) }) : null,
+    entry.note ? h("div", { class: "notes", text: entry.note }) : null,
+    notes,
+    add);
+}
+
 function showSnooze(task) {
   const sheet = $("#task-sheet");
   $("#task-panel").replaceChildren(h("div", { class: "choices" },
@@ -462,6 +568,11 @@ function showDone(task, skipping) {
   notAgain.addEventListener("change", mark);
   mark();
 
+  // What was noted while working, so it isn't written again here.
+  const noted = !skipping && (task.notesThisTime || []).length
+    ? h("div", { class: "noted" }, h("p", { class: "dim", text: S.notedThisTime }),
+        h("ul", {}, task.notesThisTime.map((n) => h("li", { text: n.text }))))
+    : null;
   const form = h("form", {
     onsubmit: (event) => {
       event.preventDefault();
@@ -476,6 +587,7 @@ function showDone(task, skipping) {
     },
   },
   warning,
+  noted,
   note,
   asks
     ? [h("label", {}, S.comeBack, h("div", { class: "choices" }, choiceButtons), nextField),
