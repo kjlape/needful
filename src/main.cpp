@@ -6,6 +6,7 @@
 #include <QQmlContext>
 #include <QQuickStyle>
 #include <QByteArray>
+#include <QFileInfo>
 #include <QUrl>
 #include <cstdio>
 
@@ -53,20 +54,34 @@ int main(int argc, char *argv[]) {
 
     QQuickStyle::setStyle("Material");
 
-    // The window opens on your own list unless asked for another universe.
-    QString dataPath;
+    // The window opens on your own list unless asked for another universe,
+    // or for a data file, which wins over a universe as it does for commands.
+    QString dataPath, dataOption, universe;
     const QStringList arguments = app.arguments();
     for (int i = 2; i < arguments.size(); ++i) {
-        QString name;
-        if (arguments[i] == "--universe" && i + 1 < arguments.size())
-            name = arguments[i + 1];
-        else if (arguments[i].startsWith("--universe="))
-            name = arguments[i].mid(11);
-        if (name.isEmpty())
-            continue;
-        dataPath = Universes().dataPath(name);
+        for (const QString option : {"--data", "--universe"}) {
+            QString value;
+            if (arguments[i] == option) {
+                if (i + 1 >= arguments.size()) {
+                    fprintf(stderr, "%s needs a value.\n", qPrintable(option));
+                    return 1;
+                }
+                value = arguments[++i];
+            } else if (arguments[i].startsWith(option + "=")) {
+                value = arguments[i].mid(option.size() + 1);
+            } else {
+                continue;
+            }
+            (option == "--data" ? dataOption : universe) = value;
+            break;
+        }
+    }
+    if (!dataOption.isEmpty()) {
+        dataPath = QFileInfo(dataOption).absoluteFilePath();
+    } else if (!universe.isEmpty()) {
+        dataPath = Universes().dataPath(universe);
         if (dataPath.isEmpty()) {
-            fprintf(stderr, "No universe named %s. See: needful universe\n", qPrintable(name));
+            fprintf(stderr, "No universe named %s. See: needful universe\n", qPrintable(universe));
             return 1;
         }
     }
@@ -75,9 +90,10 @@ int main(int argc, char *argv[]) {
     Backend backend(dataPath);
     // The open window keeps your paired computers in step, unless another
     // Needful here (the phone page's service, sync install) already does.
+    // A data file given with --data is a list apart, as with serve.
     PeerLink link;
     QString linkError;
-    if (!link.start(&linkError) && !linkError.isEmpty())
+    if (dataOption.isEmpty() && !link.start(&linkError) && !linkError.isEmpty())
         fprintf(stderr, "needful: %s\n", qPrintable(linkError));
     PeerPanel peers(&link, PeerLink::appDirFor({}));
 
