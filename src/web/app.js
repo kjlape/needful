@@ -616,12 +616,48 @@ function start() {
   closeOnBackdrop($("#task-sheet"));
   closeOnBackdrop($("#add-sheet"));
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") refresh();
+    if (document.visibilityState === "visible") {
+      refresh();
+      checkForUpdate();
+    }
     poll();
   });
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+  watchForUpdates();
   refresh();
   poll();
+}
+
+// A home screen app on iOS comes back to the screen without loading the page
+// again, so it would keep an old version for as long as it stays in memory.
+// Each time it's shown it asks for a newer one, and when one takes over, the
+// page reloads into it, though not while a sheet is open with something
+// half typed: then it waits for the sheet to close.
+let registration = null;
+function watchForUpdates() {
+  if (!("serviceWorker" in navigator)) return;
+  navigator.serviceWorker.register("/sw.js").then((r) => { registration = r; }).catch(() => {});
+  let controlled = !!navigator.serviceWorker.controller;
+  let reloading = false;
+  const reload = () => {
+    if (reloading) return;
+    if ($("#task-sheet").open || $("#add-sheet").open) return;
+    reloading = true;
+    location.reload();
+  };
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    // The first worker taking over a fresh page isn't a new version.
+    const first = !controlled;
+    controlled = true;
+    if (first) return;
+    app.updateWaiting = true;
+    reload();
+  });
+  for (const sheet of [$("#task-sheet"), $("#add-sheet")])
+    sheet.addEventListener("close", () => { if (app.updateWaiting) reload(); });
+}
+
+function checkForUpdate() {
+  if (registration) registration.update().catch(() => {});
 }
 
 start();
