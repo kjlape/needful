@@ -1512,6 +1512,7 @@ QString cliSummary() {
            "  serve install [--tailscale]      Keep it running as a systemd user service\n"
            "  serve login                      Put it on your tailnet as needful.<tailnet>.ts.net\n"
            "  serve status                     Whether it's serving, and where\n"
+           "  serve restart                    Restart the service, after an upgrade\n"
            "  serve uninstall                  Stop it and remove the services\n\n"
            "Every command takes --data <path>; the usual file is\n  " + Backend::defaultDataPath();
 }

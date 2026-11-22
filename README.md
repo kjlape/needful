@@ -314,13 +314,15 @@ again if you move the app.
 
 The tailnet needs MagicDNS and HTTPS certificates turned on (Tailscale admin
 console, DNS). Without `--tailscale`, only the first service is installed, and
-the page stays on this machine. `needful serve uninstall` stops and removes
-the services.
+the page stays on this machine. After upgrading Needful, `needful serve
+restart` restarts the page's service so it serves the new version, and open
+phones offer it with an Update button. `needful serve uninstall` stops and
+removes the services.
 
 Another universe gets a page of its own beside yours: `needful serve install
 --universe hers [--tailscale]` installs `needful-serve-hers.service` on the
-next free port (and a `needful-hers` node), and `login`, `status`, and
-`uninstall` take `--universe` too.
+next free port (and a `needful-hers` node), and `login`, `status`,
+`restart`, and `uninstall` take `--universe` too.
 
 ## Build
 

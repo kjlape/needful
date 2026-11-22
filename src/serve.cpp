@@ -233,7 +233,7 @@ int serve(const QStringList &arguments) {
     QCommandLineParser parser;
     parser.setApplicationDescription(
         "Serve the phone page and its API until stopped.\n\n"
-        "Also: serve install [--tailscale] [--port N], serve login, serve status, serve uninstall\n"
+        "Also: serve install [--tailscale] [--port N], serve login, serve status, serve restart, serve uninstall\n"
         "(needful serve <command> --help for each).");
     parser.addHelpOption();
     parser.addPositionalArgument("serve", "", "serve");
@@ -244,7 +244,7 @@ int serve(const QStringList &arguments) {
     parser.process(arguments);
     if (parser.positionalArguments().size() > 1)
         return fail("Unknown serve command " + parser.positionalArguments().value(1) +
-                    ". Use: serve, serve install, serve login, serve status, or serve uninstall.");
+                    ". Use: serve, serve install, serve login, serve status, serve restart, or serve uninstall.");
     QString universe;
     if (!universeOption(parser, &universe))
         return 1;
@@ -445,6 +445,36 @@ int status(const QStringList &arguments) {
                               (universe.isEmpty() ? QString() : " --universe " + universe));
     }
     return answering ? 0 : 1;
+}
+
+int restart(const QStringList &arguments) {
+    QCommandLineParser parser;
+    parser.setApplicationDescription(
+        "Restart the installed page so it serves this binary's version. Phones then offer the new version.");
+    parser.addHelpOption();
+    parser.addPositionalArgument("serve restart", "", "serve restart");
+    parser.addOption({"universe", "Another universe's install, like hers", "name"});
+    parser.process(arguments);
+    QString universe;
+    if (!universeOption(parser, &universe))
+        return 1;
+    const QString file = serveFile(universe);
+    if (!QDir(serviceDirectory()).exists(file))
+        return fail("Not installed; no " + file + " in " + serviceDirectory() + ". Install it with: needful serve install" +
+                    (universe.isEmpty() ? QString() : " --universe " + universe));
+    int code = -1;
+    if (OnMac) {
+        code = launchctl({"kickstart", "-k", launchDomain() + "/" + agentLabel("serve", universe)});
+    } else {
+        const QString systemctl = QStandardPaths::findExecutable("systemctl");
+        if (systemctl.isEmpty())
+            return fail("No systemctl here to restart " + file + " with.");
+        code = QProcess::execute(systemctl, {"--user", "restart", file});
+    }
+    if (code != 0)
+        return fail("Couldn't restart " + file + ".");
+    print(stdout, "Restarted " + file + ".");
+    return 0;
 }
 
 int uninstall(const QStringList &arguments) {
@@ -724,6 +754,7 @@ int runServe(const QStringList &arguments) {
     if (command == "uninstall") return uninstall(arguments);
     if (command == "login") return login(arguments);
     if (command == "status") return status(arguments);
+    if (command == "restart") return restart(arguments);
     return serve(arguments);
 }
 
