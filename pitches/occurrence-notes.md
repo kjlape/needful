@@ -1,8 +1,8 @@
 ---
-status: pitched
+status: completed
 pitched: 2026-11-21
-started: ~
-completed: ~
+started: 2026-11-21
+completed: 2026-11-21
 audited: ~
 slices: ~
 ---
