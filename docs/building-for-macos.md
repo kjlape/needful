@@ -169,10 +169,11 @@ before anything in it is unpacked.
    new app and asks again for Keychain items and permissions; one
    certificate keeps the app's identity, and Sparkle checks each update was
    signed with it. Back it up too (export it as a .p12).
-3. **GitHub Pages.** The repository is private, so Pages needs a paid GitHub
-   plan (the site itself is public). The dmgs live on `gh-pages`, not in
-   GitHub releases, because a private repository's release downloads need a
-   login. GitHub refuses files over 100 MB.
+3. **GitHub Pages.** Pages is free for a public repository; a private one
+   needs a paid plan (the site itself is public either way). The dmgs live in
+   `macos/` on `gh-pages`, next to the Arch repository
+   ([releasing-for-arch.md](releasing-for-arch.md)), and the scripts share
+   `bin/pages.sh`. GitHub refuses files over 100 MB.
 
 ### Each release
 

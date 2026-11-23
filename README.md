@@ -332,6 +332,10 @@ bin/test      # the tests, offscreen
 bin/install   # an Arch package, so it shows up in the app launcher
 ```
 
+Releases go out as a signed pacman repository on GitHub Pages, so Arch
+machines that add it update with `pacman -Syu`: see
+[docs/releasing-for-arch.md](docs/releasing-for-arch.md).
+
 Building needs Rust's `cargo` as well as Qt: the link between paired
 computers (`link/`) is a small Rust library on [iroh](https://iroh.computer),
 with iroh's address lookup turned off and a single relay: n0's public one unless you set another.
