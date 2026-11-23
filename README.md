@@ -352,9 +352,13 @@ bin/build-macos
 ```
 
 That builds `build/macos/Needful.app` and `build/macos/Needful-<version>.dmg`,
-with the app icon, the Qt frameworks bundled, and an ad hoc signature. Open the
-dmg and drag Needful to Applications. It isn't notarized, so on another Mac
-the first launch needs right-click, then Open.
+with the app icon and the Qt frameworks bundled. Open the dmg and drag Needful
+to Applications. It isn't notarized, so on another Mac the first launch needs
+Open Anyway in System Settings, Privacy & Security.
+
+Released builds update themselves with [Sparkle](https://sparkle-project.org),
+from a signed feed on GitHub Pages: `bin/release-macos` publishes one. Setting
+up the keys is in [docs/building-for-macos.md](docs/building-for-macos.md#updates).
 
 Double-clicking opens the window. The command line is the same program:
 

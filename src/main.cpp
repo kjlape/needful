@@ -5,6 +5,7 @@
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
+#include <QTimer>
 #include <QByteArray>
 #include <QFileInfo>
 #include <QUrl>
@@ -17,6 +18,9 @@
 #include "theme.h"
 #include "translator.h"
 #include "universes.h"
+#ifdef NEEDFUL_SPARKLE
+#include "updater.h"
+#endif
 
 int main(int argc, char *argv[]) {
     // Bare needful prints help, as a command line tool should; the launcher
@@ -108,6 +112,11 @@ int main(int argc, char *argv[]) {
     engine.load(QUrl("qrc:/Main.qml"));
     if (engine.rootObjects().isEmpty())
         return 1;
+#ifdef NEEDFUL_SPARKLE
+    // Only the window looks for updates; commands and services never do.
+    // Once the event loop runs, so Qt has built the app menu.
+    QTimer::singleShot(0, &app, startUpdater);
+#endif
 
     return app.exec();
 }

@@ -38,9 +38,11 @@ working version is `bin/build-macos`; this explains why each step is there.
    SQL drivers (`libmimerapi`, `libiodbc`, Postgres). They are optional Qt
    plugins the app does not use; the bundle is still produced.
 6. **Add the offscreen platform plugin** (see "Command line mode").
-7. **Sign ad hoc** with `codesign --force --deep -s - Needful.app`. Editing the
-   bundle after `macdeployqt` breaks its seal, and an unsigned or broken
-   arm64 app can refuse to launch. This is not distribution signing.
+7. **Sign** every library and framework inside out, then the app, with the
+   certificate in `NEEDFUL_CODESIGN_IDENTITY`, or ad hoc (`-s -`) without
+   one. Editing the bundle after `macdeployqt` breaks its seal, and an
+   unsigned or broken arm64 app can refuse to launch. Neither is Apple's
+   distribution signing; see "Updates" for why the certificate matters.
 8. **Pack the dmg.** Put the app and a symlink to `/Applications` in a folder,
    then `hdiutil create -volname Needful -srcfolder <folder> -format UDZO
    Needful-<version>.dmg`. Read the version from `VERSION` in the `.pro` so
@@ -130,12 +132,71 @@ when it is there, detect `openrsync` or a major version below 3 with
 `rsync --version`, and for the old one drop those flags and single-quote the
 remote path, since the other computer's shell now reads it.
 
+## Updates
+
+Releases go out like Flip's Flatpak repository: signed, from GitHub Pages,
+and checked against a key the app was installed with. On macOS that's
+[Sparkle](https://sparkle-project.org), which `bin/build-macos` downloads
+(a pinned version, checked against its hash) and builds in when
+`macos/sparkle-public-key` exists.
+
+| Flatpak | Sparkle |
+| --- | --- |
+| GPG key signs the OSTree repo | An Ed25519 key signs each dmg and the feed |
+| The `.flatpakref` pins the public key | `SUPublicEDKey` in the installed app's `Info.plist` pins it |
+| The repo on `gh-pages` | `appcast.xml` and the newest dmgs on `gh-pages` |
+| `flatpak update` | The app checks daily and offers the update; Check for Updates… in the app menu checks now |
+
+The first download is trusted because it came over HTTPS from your Pages
+site; after that, the app installs only what the same key signed, so a
+compromised GitHub account can't ship an update. `SURequireSignedFeed` makes
+the feed itself signed too, and `SUVerifyUpdateBeforeExtraction` checks a dmg
+before anything in it is unpacked.
+
+### Set up once, on the Mac that releases
+
+1. **The signing key.** Run `bin/build-macos` once so Sparkle is downloaded,
+   then `build/sparkle/<version>/bin/generate_keys`. It keeps the private key
+   in the login Keychain and prints the public key. Put the public key in
+   `macos/sparkle-public-key` and commit it. Back up the private key with
+   `generate_keys -x needful-sparkle.key` and keep it offline: without it,
+   nobody gets another update until they reinstall by hand.
+2. **A code signing certificate.** Keychain Access, then Certificate
+   Assistant, then Create a Certificate: a name like "Needful Self-Signed",
+   identity type Self Signed Root, certificate type Code Signing. Then
+   `export NEEDFUL_CODESIGN_IDENTITY="Needful Self-Signed"`. An ad hoc
+   signature is different on every build, so macOS treats each update as a
+   new app and asks again for Keychain items and permissions; one
+   certificate keeps the app's identity, and Sparkle checks each update was
+   signed with it. Back it up too (export it as a .p12).
+3. **GitHub Pages.** The repository is private, so Pages needs a paid GitHub
+   plan (the site itself is public). The dmgs live on `gh-pages`, not in
+   GitHub releases, because a private repository's release downloads need a
+   login. GitHub refuses files over 100 MB.
+
+### Each release
+
+Bump `VERSION` (and `pkgbuild/PKGBUILD`), commit, then on the Mac:
+
+```sh
+bin/release-macos            # tags v<version>, builds, prepares build/pages
+bin/release-macos --publish  # pushes the tag and gh-pages
+```
+
+The release notes are the commit subjects since the last tag. The newest
+three versions stay downloadable. Copies that run the phone page's service
+(`serve install`) should run `needful serve restart` after updating, as on
+Linux.
+
 ## What this does not do
 
-- **Distribution signing and notarization.** The result is ad hoc signed, so
-  other Macs show a Gatekeeper warning until the user right-clicks and picks
-  Open. Real distribution needs a Developer ID certificate, `codesign` with the
-  hardened runtime, and `notarytool`.
+- **Distribution signing and notarization.** A self-signed certificate does
+  nothing for Gatekeeper, so on another Mac the first launch is refused until
+  the user clicks Open Anyway in System Settings, Privacy & Security, or runs
+  `xattr -dr com.apple.quarantine /Applications/Needful.app`. Updates after
+  that install without the prompt. Removing it needs a Developer ID
+  certificate (paid), the hardened runtime, and `notarytool`; the same
+  pipeline takes them by changing the identity and adding a notarize step.
 - **Universal binaries.** It builds for the architecture of the Mac it runs on
   (arm64 on Apple silicon).
 - **A minimum macOS other than Qt's default** (13 for Qt 6.11).

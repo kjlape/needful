@@ -1,0 +1,204 @@
+#!/bin/sh
+# Publishes the macOS app so installed copies update themselves with Sparkle.
+#
+#   bin/release-macos            Tag v<version> here, build the signed app, and
+#                                add it to build/pages, a checkout of the
+#                                gh-pages branch, with a signed appcast.xml.
+#                                Nothing leaves the machine.
+#   bin/release-macos --publish  Also push the tag and gh-pages, and turn on
+#                                GitHub Pages.
+#
+# Runs on a Mac, on a clean commit whose VERSION (in needful.pro) is newer
+# than anything published. Needs the Sparkle signing key in the login
+# Keychain, macos/sparkle-public-key, and NEEDFUL_CODESIGN_IDENTITY; see
+# docs/building-for-macos.md, "Updates".
+set -eu
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+GITHUB_REPO=kjlape/needful
+PAGES_URL="${NEEDFUL_PAGES_URL:-https://kjlape.github.io/needful}"
+# The newest releases stay downloadable; older ones are dropped, since every
+# copy of the app updates straight to the newest.
+KEEP=3
+
+die() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+# Asks before anything other people will see. NEEDFUL_YES=1 answers yes.
+confirm() {
+    [ "${NEEDFUL_YES:-}" = 1 ] && return 0
+    printf '%s [y/N] ' "$1"
+    read -r answer
+    case "$answer" in y | Y | yes) return 0 ;; *) die "stopped" ;; esac
+}
+
+PUBLISH=0
+case "${1:-}" in
+    "") ;;
+    --publish) PUBLISH=1 ;;
+    *) sed -n '2,/^[^#]/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac
+
+[ "$(uname)" = Darwin ] || die "this runs on macOS."
+cd "$ROOT"
+[ -f macos/sparkle-public-key ] || die "there's no macos/sparkle-public-key. See docs/building-for-macos.md, \"Updates\"."
+IDENTITY="${NEEDFUL_CODESIGN_IDENTITY:-}"
+[ -n "$IDENTITY" ] && [ "$IDENTITY" != - ] ||
+    die "set NEEDFUL_CODESIGN_IDENTITY to your signing certificate's name. An ad hoc signature changes with every build, so macOS would treat each update as a different app."
+security find-identity -p codesigning | grep -qF "\"$IDENTITY\"" ||
+    die "the Keychain has no code signing identity named \"$IDENTITY\"."
+[ -z "$(git status --porcelain)" ] || die "commit or stash your changes first."
+
+VERSION="$(sed -n 's/^VERSION *= *//p' needful.pro)"
+TAG="v$VERSION"
+if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+    [ "$(git rev-parse "$TAG^{commit}")" = "$(git rev-parse HEAD)" ] ||
+        die "$TAG already tags another commit. Bump the version first."
+fi
+
+# build/pages holds the gh-pages branch: the appcast, the release notes for
+# each version, and the newest dmgs. It starts from what's published, so the
+# appcast keeps the earlier releases.
+PAGES="$ROOT/build/pages"
+REMOTE_PAGES=0
+git ls-remote --exit-code origin refs/heads/gh-pages >/dev/null 2>&1 && REMOTE_PAGES=1
+# Bookkeeping on this branch uses commands that run no git hooks, so a
+# broken global hook can't stop a release halfway.
+if [ ! -e "$PAGES/.git" ]; then
+    git worktree prune
+    if [ "$REMOTE_PAGES" = 1 ]; then
+        git fetch -q origin "+gh-pages:refs/remotes/origin/gh-pages"
+        git worktree add -q --no-checkout -B gh-pages "$PAGES" origin/gh-pages
+        git -C "$PAGES" reset -q --hard
+    else
+        git worktree add -q --orphan -b gh-pages "$PAGES"
+    fi
+fi
+git -C "$PAGES" symbolic-ref HEAD refs/heads/gh-pages
+if [ "$REMOTE_PAGES" = 1 ]; then
+    git -C "$PAGES" fetch -q origin gh-pages
+    git -C "$PAGES" reset -q --hard FETCH_HEAD
+fi
+
+ITEMS="$PAGES/macos/items"
+mkdir -p "$ITEMS"
+# A version already on origin is never replaced: copies that have it would
+# never see the new build. One only made here, by a run without --publish,
+# is made again.
+[ "$REMOTE_PAGES" = 1 ] && [ -f "$ITEMS/$VERSION.xml" ] && die "$VERSION is already published. Bump the version first."
+rm -f "$ITEMS/$VERSION.xml"
+newest="$(ls "$ITEMS" | sed 's/\.xml$//' | sort -V | tail -1)"
+if [ -n "$newest" ]; then
+    [ "$(printf '%s\n%s\n' "$newest" "$VERSION" | sort -V | tail -1)" = "$VERSION" ] ||
+        die "$VERSION is older than the published $newest."
+fi
+
+NEEDFUL_CODESIGN_IDENTITY="$IDENTITY" NEEDFUL_PAGES_URL="$PAGES_URL" "$ROOT/bin/build-macos"
+SPARKLE_BIN="$(ls -d "$ROOT"/build/sparkle/*/bin | sort -V | tail -1)"
+DMG_NAME="Needful-$VERSION.dmg"
+cp "$ROOT/build/macos/$DMG_NAME" "$PAGES/$DMG_NAME"
+
+# Signs with the private key generate_keys put in the login Keychain, and
+# prints the attributes the appcast needs: sparkle:edSignature and length.
+SIGNATURE="$("$SPARKLE_BIN/sign_update" "$PAGES/$DMG_NAME")"
+case "$SIGNATURE" in *edSignature=*) ;; *) die "sign_update gave no signature: $SIGNATURE" ;; esac
+
+# The release notes: commit subjects since the last release, oldest first.
+last="$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null || true)"
+notes=""
+[ -z "$last" ] || notes="$(git log --reverse --format=%s "$last"..HEAD |
+    sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g' | sed 's|.*|<li>&</li>|')"
+[ -n "$notes" ] || notes="<li>First release.</li>"
+
+cat >"$ITEMS/$VERSION.xml" <<EOF
+    <item>
+      <title>Needful $VERSION</title>
+      <pubDate>$(LC_ALL=C date -u '+%a, %d %b %Y %H:%M:%S +0000')</pubDate>
+      <sparkle:version>$VERSION</sparkle:version>
+      <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[<ul>
+$notes
+</ul>]]></description>
+      <enclosure url="$PAGES_URL/$DMG_NAME" type="application/octet-stream" $SIGNATURE/>
+    </item>
+EOF
+
+# Only the newest $KEEP releases stay, each with its dmg.
+ls "$ITEMS" | sed 's/\.xml$//' | sort -rV | tail -n "+$((KEEP + 1))" | while IFS= read -r old; do
+    rm -f "$ITEMS/$old.xml" "$PAGES/Needful-$old.dmg"
+done
+
+{
+    cat <<EOF
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Needful</title>
+    <link>$PAGES_URL/appcast.xml</link>
+    <description>Updates for Needful on macOS</description>
+EOF
+    ls "$ITEMS" | sed 's/\.xml$//' | sort -rV | while IFS= read -r version; do
+        cat "$ITEMS/$version.xml"
+    done
+    cat <<EOF
+  </channel>
+</rss>
+EOF
+} >"$PAGES/appcast.xml"
+# Signs the feed itself (SURequireSignedFeed), embedding the signature in it.
+"$SPARKLE_BIN/sign_update" "$PAGES/appcast.xml" >/dev/null
+
+cp "$ROOT/pkgbuild/needful.svg" "$PAGES/needful.svg"
+# GitHub Pages would otherwise run Jekyll over the files.
+touch "$PAGES/.nojekyll"
+cat >"$PAGES/index.html" <<EOF
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Needful</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 42rem; margin: 3rem auto; padding: 0 1rem; color: #1a1a1a; background: #fff; }
+  pre { background: #f2f2f2; padding: .75rem 1rem; overflow-x: auto; }
+  img { width: 64px; height: 64px; }
+  @media (prefers-color-scheme: dark) { body { color: #e6e6e6; background: #0e0e10; } pre { background: #1c1c20; } a { color: #ffd60a; } }
+</style>
+<img src="needful.svg" alt="">
+<h1>Needful</h1>
+<p>What needs doing, most needful first. Version $VERSION.</p>
+<h2>Install on macOS</h2>
+<p><a href="$DMG_NAME">Download $DMG_NAME</a>, open it, and drag Needful to Applications.</p>
+<p>It isn't notarized by Apple, so the first time you open it macOS refuses.
+Open System Settings, then Privacy &amp; Security, and click Open Anyway. Or, in Terminal:</p>
+<pre>xattr -dr com.apple.quarantine /Applications/Needful.app</pre>
+<p>After that it updates itself, and only installs updates signed with the key it came with.</p>
+</html>
+EOF
+
+# One parentless commit holding what's published now, so dropped dmgs don't
+# stay in the branch's history.
+git -C "$PAGES" add -A
+tree="$(git -C "$PAGES" write-tree)"
+commit="$(git -C "$PAGES" commit-tree "$tree" -m "Publish Needful $TAG for macOS")"
+git -C "$PAGES" update-ref refs/heads/gh-pages "$commit"
+git rev-parse -q --verify "refs/tags/$TAG" >/dev/null || git tag "$TAG"
+echo "Added $VERSION to $PAGES and tagged $TAG."
+
+if [ "$PUBLISH" = 0 ]; then
+    echo "Nothing was pushed. Publish with: bin/release-macos --publish"
+    exit 0
+fi
+
+command -v gh >/dev/null || die "gh is not installed. brew install gh, then gh auth login."
+confirm "Push $TAG, replace gh-pages on origin with Needful $VERSION, and serve it on GitHub Pages?"
+git push -q origin "$TAG"
+git -C "$PAGES" push -q --force origin gh-pages
+if ! gh api "repos/$GITHUB_REPO/pages" >/dev/null 2>&1; then
+    gh api -X POST "repos/$GITHUB_REPO/pages" -f "source[branch]=gh-pages" -f "source[path]=/" >/dev/null
+    echo "Turned on GitHub Pages; the first deploy takes a minute or two."
+fi
+echo "Published. Installed copies find $VERSION at $PAGES_URL/appcast.xml,"
+echo "and new installs start at $PAGES_URL/"

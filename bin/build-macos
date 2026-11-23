@@ -1,10 +1,24 @@
 #!/bin/sh
-# Builds Needful.app and Needful-<version>.dmg for macOS into build/.
+# Builds Needful.app and Needful-<version>.dmg for macOS into build/macos/.
 # Needs Qt 6 (qmake6 on PATH, or under ~/Qt/<version>/macos) and rsvg-convert.
+#
+# With macos/sparkle-public-key present, the app updates itself with Sparkle
+# from the feed bin/release-macos publishes. Without it, it builds as before,
+# with no updates.
+#
+# NEEDFUL_CODESIGN_IDENTITY names the certificate that signs the app (see
+# docs/building-for-macos.md, "Updates"). Unset, the app is signed ad hoc,
+# which runs on this Mac but changes identity with every build.
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 BUILD="$ROOT/build"
+IDENTITY="${NEEDFUL_CODESIGN_IDENTITY:--}"
+PAGES_URL="${NEEDFUL_PAGES_URL:-https://kjlape.github.io/needful}"
+KEY_FILE="$ROOT/macos/sparkle-public-key"
+SPARKLE_VERSION=2.10.1
+SPARKLE_SHA256=1a856d2a9edb8e628de88121d7be04cf0e2167f8641650b78fca00b14244cf27
+SPARKLE_DIR="$BUILD/sparkle/$SPARKLE_VERSION"
 
 if ! command -v qmake6 >/dev/null 2>&1; then
     QT_BIN="$(ls -d "$HOME"/Qt/*/macos/bin 2>/dev/null | sort -V | tail -1)"
@@ -13,9 +27,34 @@ if ! command -v qmake6 >/dev/null 2>&1; then
 fi
 command -v rsvg-convert >/dev/null 2>&1 || { echo "rsvg-convert not found (brew install librsvg)" >&2; exit 1; }
 
+# Sparkle, downloaded once per version and checked against the hash above,
+# so a tampered download never gets built in.
+SPARKLE=0
+if [ -f "$KEY_FILE" ]; then
+    SPARKLE=1
+    PUBLIC_KEY="$(tr -d ' \n' <"$KEY_FILE")"
+    if [ ! -d "$SPARKLE_DIR/Sparkle.framework" ]; then
+        rm -rf "$SPARKLE_DIR"
+        mkdir -p "$SPARKLE_DIR"
+        archive="$SPARKLE_DIR.tar.xz"
+        curl -fsSL -o "$archive" \
+            "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz"
+        echo "$SPARKLE_SHA256  $archive" | shasum -a 256 -c - >/dev/null ||
+            { echo "Sparkle-$SPARKLE_VERSION.tar.xz doesn't match its expected hash" >&2; rm -f "$archive"; exit 1; }
+        tar -xf "$archive" -C "$SPARKLE_DIR"
+        rm -f "$archive"
+    fi
+else
+    echo "No macos/sparkle-public-key, so this build won't update itself." >&2
+fi
+
 mkdir -p "$BUILD"
 cd "$BUILD"
-qmake6 "$ROOT/needful.pro"
+if [ "$SPARKLE" = 1 ]; then
+    qmake6 "$ROOT/needful.pro" CONFIG+=sparkle SPARKLE_DIR="$SPARKLE_DIR"
+else
+    qmake6 "$ROOT/needful.pro"
+fi
 make -j"$(sysctl -n hw.ncpu)"
 
 # The command line tool stays `needful`; the app people see is Needful.
@@ -40,19 +79,53 @@ iconutil -c icns "$OUT/Needful.iconset" -o "$APP/Contents/Resources/Needful.icns
 rm -rf "$OUT/Needful.iconset"
 
 PLIST="$APP/Contents/Info.plist"
-set_plist() {
-    /usr/libexec/PlistBuddy -c "Set :$1 $2" "$PLIST" 2>/dev/null ||
-        /usr/libexec/PlistBuddy -c "Add :$1 string $2" "$PLIST"
+set_plist() { # key type value
+    /usr/libexec/PlistBuddy -c "Set :$1 $3" "$PLIST" 2>/dev/null ||
+        /usr/libexec/PlistBuddy -c "Add :$1 $2 $3" "$PLIST"
 }
-set_plist CFBundleName Needful
-set_plist CFBundleDisplayName Needful
-set_plist CFBundleIconFile Needful
+set_plist CFBundleName string Needful
+set_plist CFBundleDisplayName string Needful
+set_plist CFBundleIconFile string Needful
+# Sparkle offers an update only when its CFBundleVersion is higher.
+set_plist CFBundleShortVersionString string "$VERSION"
+set_plist CFBundleVersion string "$VERSION"
+
+if [ "$SPARKLE" = 1 ]; then
+    set_plist SUFeedURL string "$PAGES_URL/appcast.xml"
+    set_plist SUPublicEDKey string "$PUBLIC_KEY"
+    # Checks daily without first asking whether to; installing still asks.
+    set_plist SUEnableAutomaticChecks bool true
+    # The feed and the download must both be signed with the key above, and
+    # the download is checked before anything in it is unpacked.
+    set_plist SURequireSignedFeed bool true
+    set_plist SUVerifyUpdateBeforeExtraction bool true
+    mkdir -p "$APP/Contents/Frameworks"
+    ditto "$SPARKLE_DIR/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
+    # The XPC services are only for sandboxed apps, which Needful isn't.
+    rm -rf "$APP/Contents/Frameworks/Sparkle.framework/XPCServices" \
+        "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices"
+fi
 
 macdeployqt "$APP" -qmldir="$ROOT/src"
 # Commands run on the offscreen platform, which macdeployqt does not bundle.
 cp "$(qmake6 -query QT_INSTALL_PLUGINS)/platforms/libqoffscreen.dylib" "$APP/Contents/PlugIns/platforms/"
-# Ad hoc signature, so the edited bundle at least launches on this Mac.
-codesign --force --deep -s - "$APP"
+
+# Signed inside out: Sparkle's helpers, every library and framework (deepest
+# first), then the app. The same certificate on every build keeps the app's
+# identity, so macOS keeps its Keychain items and permissions across updates.
+# No hardened runtime: its library validation refuses frameworks signed
+# without a Developer ID team, and only notarization needs it.
+sign() { codesign --force --timestamp=none -s "$IDENTITY" "$1"; }
+SPARKLE_B="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
+if [ -d "$SPARKLE_B" ]; then
+    sign "$SPARKLE_B/Autoupdate"
+    sign "$SPARKLE_B/Updater.app"
+fi
+# QML plugins may sit under Resources/qml too, so the whole bundle is searched.
+find "$APP/Contents" -depth \( -name '*.dylib' -o -name '*.framework' \) ! -type l |
+    while IFS= read -r code; do sign "$code"; done
+sign "$APP"
+codesign --verify --strict --deep "$APP"
 
 STAGE="$OUT/dmg"
 rm -rf "$STAGE"
