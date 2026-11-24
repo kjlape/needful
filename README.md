@@ -332,9 +332,39 @@ bin/test      # the tests, offscreen
 bin/install   # an Arch package, so it shows up in the app launcher
 ```
 
-Releases go out as a signed pacman repository on GitHub Pages, so Arch
-machines that add it update with `pacman -Syu`: see
-[docs/releasing-for-arch.md](docs/releasing-for-arch.md).
+Releases go out as a signed pacman repository and a signed Flatpak
+repository on GitHub Pages, so installs update with `pacman -Syu` or
+`flatpak update`: see [docs/releasing-for-linux.md](docs/releasing-for-linux.md).
+
+### Flatpak
+
+On any Linux with Flatpak:
+
+```sh
+flatpak install --user https://kjlape.github.io/needful/flatpak/io.github.kjlape.Needful.flatpakref
+```
+
+Commands run as `flatpak run io.github.kjlape.Needful <command>`, and the
+Flatpak keeps its own list, in `~/.var/app/io.github.kjlape.Needful`, apart
+from a native install's. The sandbox can't install services,
+so for the phone page, write the unit yourself in
+`~/.config/systemd/user/needful-serve.service`:
+
+```ini
+[Unit]
+Description=Needful's phone page
+
+[Service]
+ExecStart=/usr/bin/flatpak run io.github.kjlape.Needful serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+then `systemctl --user enable --now needful-serve`. `bin/flatpak` builds and
+installs it from this checkout.
 
 Building needs Rust's `cargo` as well as Qt: the link between paired
 computers (`link/`) is a small Rust library on [iroh](https://iroh.computer),

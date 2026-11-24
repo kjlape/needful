@@ -12,7 +12,7 @@
 # Runs on x86_64 Arch, on a clean commit whose VERSION (in needful.pro) is
 # newer than what's published. Needs devtools, for the clean chroot (it asks
 # for sudo), and NEEDFUL_GPG_KEY, the key that signs the packages and the
-# repository; see docs/releasing-for-arch.md.
+# repository; see docs/releasing-for-linux.md.
 #
 # NEEDFUL_NO_CHROOT=1 builds with plain makepkg instead, to rehearse without
 # devtools. Such a build can't be published.
@@ -33,7 +33,7 @@ else
     command -v extra-x86_64-build >/dev/null || die "extra-x86_64-build is missing. sudo pacman -S devtools"
 fi
 KEY="${NEEDFUL_GPG_KEY:-}"
-[ -n "$KEY" ] || die "set NEEDFUL_GPG_KEY to the signing key's fingerprint. See docs/releasing-for-arch.md."
+[ -n "$KEY" ] || die "set NEEDFUL_GPG_KEY to the signing key's fingerprint. See docs/releasing-for-linux.md."
 gpg --list-secret-keys "$KEY" >/dev/null 2>&1 || die "gpg has no secret key $KEY."
 FINGERPRINT="$(gpg --with-colons --fingerprint "$KEY" | awk -F: '/^fpr:/ { print $10; exit }')"
 cd "$ROOT"

@@ -36,6 +36,23 @@ int fail(const QString &message) {
     return 1;
 }
 
+}  // namespace
+
+QString flatpakRefusal(const QString &what) {
+    const QString app = qEnvironmentVariable("FLATPAK_ID");
+    if (app.isEmpty())
+        return {};
+    if (what == "skill")
+        return "The Flatpak can't write to your home folder. Save the skill yourself:\n"
+               "  mkdir -p ~/.agents/skills/needful\n"
+               "  flatpak run " + app + " skill > ~/.agents/skills/needful/SKILL.md";
+    return "The Flatpak can't install " + what + ": its sandbox can't reach systemd. Run\n"
+           "  flatpak run " + app + " <command>\n"
+           "from a systemd user unit of your own (the README's Flatpak section has one), "
+           "or install the Arch package, which can.";
+}
+
+namespace {
 // --data, or the --universe named; false with a message for an unknown one.
 bool dataOption(const QCommandLineParser &parser, QString *path) {
     *path = parser.value("data");
@@ -299,6 +316,8 @@ int install(const QStringList &arguments) {
     parser.addOption({"universe", "Serve another universe's list instead of yours, like hers", "name"});
     parser.addOption({"tailscale", "Also run a Tailscale node named needful, for https://needful.<tailnet>.ts.net"});
     parser.process(arguments);
+    if (const QString refusal = flatpakRefusal("the phone page's service"); !refusal.isEmpty())
+        return fail(refusal);
     QString universe;
     if (!universeOption(parser, &universe))
         return 1;

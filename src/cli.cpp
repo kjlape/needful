@@ -684,6 +684,8 @@ int skill(const QStringList &arguments) {
     }
     if (command.argument(1) != "install")
         return fail("Use needful skill to print the skill, or needful skill install.");
+    if (const QString refusal = flatpakRefusal("skill"); !refusal.isEmpty())
+        return fail(refusal);
     const QDir home = QDir::home();
     const QString directory = home.filePath(".agents/skills/needful");
     QSaveFile file(directory + "/SKILL.md");
@@ -746,6 +748,8 @@ int syncRsync(const Command &command, const SyncFolder &folder) {
     }
     if (step != "install" || host.isEmpty())
         return fail("Use needful sync rsync install <host> (as ssh knows it), or needful sync rsync uninstall.");
+    if (const QString refusal = flatpakRefusal("the rsync timer"); !refusal.isEmpty())
+        return fail(refusal);
 
     RsyncSetup setup;
     setup.rsync = findRsync();
@@ -1016,6 +1020,8 @@ int syncInstall(const QString &dataOverride, bool remove) {
     QDir units(OnMac ? launchAgentsDirectory() : systemdUserDirectory());
     const QString name = OnMac ? LinkAgent : LinkService;
     const QString systemctl = OnMac ? QString() : QStandardPaths::findExecutable("systemctl");
+    if (const QString refusal = flatpakRefusal("the sync service"); !remove && !refusal.isEmpty())
+        return fail(refusal);
     if (remove) {
         if (!units.exists(name))
             return fail("Nothing to remove; no " + name + " in " + units.path());

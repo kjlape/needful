@@ -1,0 +1,64 @@
+# Flatpak manifest for Needful. Build and install it with bin/flatpak;
+# bin/release-flatpak publishes it.
+id: io.github.kjlape.Needful
+runtime: org.kde.Platform
+runtime-version: '6.11'
+sdk: org.kde.Sdk
+# For cargo, which builds the link between paired computers (link/).
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: needful
+
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # The link between paired computers, and the phone page.
+  - --share=network
+  # Follows the Omarchy theme and language, read-only. Elsewhere these paths
+  # don't exist, and Needful keeps its default accent and the system language.
+  - --filesystem=~/.local/state/omarchy:ro
+  - --filesystem=~/.config/omarchy:ro
+
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /share/man
+  - '*.a'
+
+modules:
+  - name: needful
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/needful/cargo
+      # cargo downloads the crates Cargo.lock pins, checking each one's hash.
+      # A self-hosted repository may build with the network; Flathub would
+      # want them vendored instead.
+      build-args:
+        - --share=network
+    build-commands:
+      # The KDE SDK has had both names for qmake.
+      - mkdir -p build && cd build && (command -v qmake6 >/dev/null && qmake6 ../needful.pro || qmake ../needful.pro) && make -j"$FLATPAK_BUILDER_N_JOBS"
+      - install -Dm755 build/needful /app/bin/needful
+      - install -Dm644 LICENSE /app/share/licenses/io.github.kjlape.Needful/LICENSE
+      - install -Dm644 pkgbuild/needful.svg /app/share/icons/hicolor/scalable/apps/io.github.kjlape.Needful.svg
+      - install -Dm644 flatpak/io.github.kjlape.Needful.metainfo.xml /app/share/metainfo/io.github.kjlape.Needful.metainfo.xml
+      # The Arch package's launcher entry, renamed to the app ID.
+      - sed -e 's/^Icon=needful$/Icon=io.github.kjlape.Needful/' -e 's/^StartupWMClass=needful$/StartupWMClass=io.github.kjlape.Needful/'
+        pkgbuild/needful.desktop > io.github.kjlape.Needful.desktop
+      - install -Dm644 io.github.kjlape.Needful.desktop /app/share/applications/io.github.kjlape.Needful.desktop
+    sources:
+      # Builds this checkout, minus build output.
+      - type: dir
+        path: ..
+        skip:
+          - build
+          - link/target
+          - flatpak/build-dir
+          - flatpak/repo
+          - .flatpak-builder
+          - pkgbuild/pkg
+          - pkgbuild/src

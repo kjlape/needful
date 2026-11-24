@@ -21,7 +21,7 @@ Dialog {
     property int done: 0
     property string aboutText: ""
 
-    function reset() {
+    function clearForm() {
         note.text = ""
         followUp.checked = false
         priorityBox.currentIndex = 1
@@ -29,7 +29,7 @@ Dialog {
     }
 
     function openFor(contextId) {
-        reset()
+        clearForm()
         about = 0
         done = 0
         aboutText = ""
@@ -42,7 +42,7 @@ Dialog {
 
     // "About: Oil change · Tacoma · this time"
     function openAbout(task) {
-        reset()
+        clearForm()
         about = task.id
         done = 0
         aboutText = task.title + where(task.contextPath) + " · " + qsTr("this time")
@@ -52,7 +52,7 @@ Dialog {
 
     // "About: Oil change · Tacoma · Nov 21", for a completion or skip.
     function openOn(entry) {
-        reset()
+        clearForm()
         about = 0
         done = entry.id
         aboutText = entry.title + where(entry.contextPath) + " · " + entry.date

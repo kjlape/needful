@@ -3,3 +3,7 @@
 /pkgbuild/src/
 *.pkg.tar.*
 link/target/
+/.flatpak-builder/
+/flatpak/build-dir/
+/flatpak/repo/
+*.flatpak

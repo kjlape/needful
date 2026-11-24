@@ -1806,6 +1806,28 @@ private slots:
         QVERIFY(!QFile::exists(here + "/machines/notes.txt"));
     }
 
+    void flatpakRefusesToInstallServicesOrTheSkill()
+    {
+        QTemporaryDir dir;
+        const QByteArray oldConfig = qgetenv("XDG_CONFIG_HOME"), oldHome = qgetenv("HOME");
+        qputenv("XDG_CONFIG_HOME", dir.filePath("config").toUtf8());
+        qputenv("HOME", dir.path().toUtf8());
+        qputenv("FLATPAK_ID", "io.github.kjlape.Needful");
+        const int serve = runServe({"needful", "serve", "install"});
+        const int skill = runCli({"needful", "skill", "install"});
+        qunsetenv("FLATPAK_ID");
+        auto restore = [](const char *name, const QByteArray &value) {
+            if (value.isEmpty()) qunsetenv(name); else qputenv(name, value);
+        };
+        restore("XDG_CONFIG_HOME", oldConfig);
+        restore("HOME", oldHome);
+        QCOMPARE(serve, 1);
+        QCOMPARE(skill, 1);
+        // Nothing was written that nothing would read.
+        QVERIFY(QDir(dir.path()).entryList(QDir::NoDotAndDotDot | QDir::AllEntries | QDir::Hidden).isEmpty());
+        QVERIFY(flatpakRefusal("x").isEmpty());
+    }
+
     void serveInstallWritesIntoTheConfigFolder()
     {
         QTemporaryDir dir;

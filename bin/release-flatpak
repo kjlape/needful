@@ -1,0 +1,148 @@
+#!/bin/sh
+# Publishes Needful as a signed Flatpak repository on GitHub Pages, so any
+# Linux with Flatpak can install it with one command and get new releases
+# with flatpak update.
+#
+#   bin/release-flatpak            Tag v<version> here, build the Flatpak, and
+#                                  add it, signed, to the repository in
+#                                  build/pages, a checkout of the gh-pages
+#                                  branch. Nothing leaves the machine.
+#   bin/release-flatpak --publish  Also push the tag and gh-pages, and turn on
+#                                  GitHub Pages.
+#
+# Runs on Linux with flatpak and ostree, on a clean commit whose VERSION (in
+# needful.pro) is newer than what's published, with NEEDFUL_GPG_KEY, the key
+# that signs the repository; see docs/releasing-for-linux.md.
+set -eu
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+. "$ROOT/bin/pages.sh"
+. "$ROOT/bin/flatpak-lib.sh"
+
+parse_publish "$@"
+refuse_tmp "$ROOT"
+command -v ostree >/dev/null || die "ostree is not installed. sudo pacman -S ostree"
+command -v appstreamcli >/dev/null || die "appstreamcli is not installed. sudo pacman -S appstream"
+[ "$(uname -m)" = x86_64 ] || die "this builds the x86_64 Flatpak, on an x86_64 machine."
+KEY="${NEEDFUL_GPG_KEY:-}"
+[ -n "$KEY" ] || die "set NEEDFUL_GPG_KEY to the signing key's fingerprint. See docs/releasing-for-linux.md."
+gpg --list-secret-keys "$KEY" >/dev/null 2>&1 || die "gpg has no secret key $KEY."
+cd "$ROOT"
+release_version
+pages_checkout
+
+# flatpak/ holds the OSTree repository, the files that add it to Flatpak,
+# and the version last published there.
+FLATPAK="$PAGES/flatpak"
+REPO="$FLATPAK/repo"
+mkdir -p "$FLATPAK"
+published="$(cat "$FLATPAK/version" 2>/dev/null || true)"
+if [ -n "$published" ]; then
+    [ "$REMOTE_PAGES" = 1 ] && [ "$published" = "$VERSION" ] && pages_finish "Needful $VERSION for Flatpak"
+    # One made here by a run without --publish, and not on origin, is made again.
+    if [ "$REMOTE_PAGES" = 1 ] || [ "$published" != "$VERSION" ]; then
+        [ "$published" != "$VERSION" ] && [ "$(printf '%s\n%s\n' "$published" "$VERSION" | sort -V | tail -1)" = "$VERSION" ] ||
+            die "$VERSION isn't newer than the published $published. Bump the version first."
+    fi
+fi
+
+# The release's commit, in a checkout of its own: the metainfo there gains
+# this release's entry and a screenshot from its tag, which the checked-in
+# one doesn't carry.
+TREE="$ROOT/build/release-tree-flatpak"
+git worktree remove --force "$TREE" 2>/dev/null || rm -rf "$TREE"
+git worktree prune
+git worktree add -q --detach "$TREE" "$SOURCE"
+METAINFO="$TREE/flatpak/$APP.metainfo.xml"
+ENTRY="$ROOT/build/release-entry.xml"
+{
+    printf '    <release version="%s" date="%s">\n      <description>\n        <ul>\n' "$VERSION" "$(date +%F)"
+    release_notes | sed 's/^/          /'
+    printf '        </ul>\n      </description>\n    </release>\n'
+} >"$ENTRY"
+sed -i -e "/^  <releases>\$/r $ENTRY" \
+    -e "s|raw\.githubusercontent\.com/$GITHUB_REPO/[^/]*/|raw.githubusercontent.com/$GITHUB_REPO/$TAG/|" "$METAINFO"
+rm -f "$ENTRY"
+grep -q "<release version=\"$VERSION\"" "$METAINFO" || die "couldn't add the release to $METAINFO."
+appstreamcli validate --no-net "$METAINFO" >/dev/null || {
+    appstreamcli validate --no-net "$METAINFO"
+    die "the release's metainfo doesn't validate."
+}
+
+setup_builder
+BUILD_REPO="$ROOT/build/flatpak-repo"
+rm -rf "$BUILD_REPO"
+cd "$TREE/flatpak"
+$BUILDER --user --force-clean --repo="$BUILD_REPO" \
+    --state-dir="${NEEDFUL_FLATPAK_STATE:-$ROOT/.flatpak-builder}" "$ROOT/build/flatpak-build-dir" "$APP.yml"
+cd "$ROOT"
+git worktree remove --force "$TREE"
+
+# A run without --publish leaves its repository's ignored scratch folders
+# behind when the next run resets build/pages to what's published, so a
+# repository counts only with its config, and leftovers are cleared.
+if [ ! -f "$REPO/config" ]; then
+    rm -rf "$REPO"
+    ostree --repo="$REPO" init --mode=archive-z2
+fi
+# Git keeps no empty directories, so a repository restored from gh-pages
+# lacks the ones OSTree expects; its lock and scratch space stay out of git.
+for directory in refs/heads refs/remotes refs/mirrors tmp state extensions; do
+    mkdir -p "$REPO/$directory"
+done
+printf '/repo/.lock\n/repo/tmp/\n/repo/state/\n' >"$FLATPAK/.gitignore"
+REF="$(ostree --repo="$BUILD_REPO" refs | grep "^app/$APP/" | head -1)"
+[ -n "$REF" ] || die "the build made no app/$APP ref."
+flatpak build-commit-from --src-repo="$BUILD_REPO" --gpg-sign="$KEY" \
+    --subject="Needful $VERSION" "$REPO" "$REF"
+# Deltas make updates small; pruning keeps the last few releases, so the
+# branch stays a reasonable size.
+flatpak build-update-repo --title=Needful --comment="Routine tasks, most needful first" \
+    --homepage="$PAGES_URL/" --icon="$PAGES_URL/needful.svg" \
+    --gpg-sign="$KEY" --generate-static-deltas --prune --prune-depth=3 "$REPO"
+printf '%s\n' "$VERSION" >"$FLATPAK/version"
+
+# Flatpak wants the key binary and base64-encoded, not armored.
+KEY_BASE64="$(gpg --export "$KEY" | base64 -w0)"
+BRANCH="${REF##*/}"
+cat >"$FLATPAK/needful.flatpakrepo" <<EOF
+[Flatpak Repo]
+Title=Needful
+Url=$PAGES_URL/flatpak/repo/
+Homepage=$PAGES_URL/
+Comment=Routine tasks, most needful first
+Icon=$PAGES_URL/needful.svg
+GPGKey=$KEY_BASE64
+EOF
+cat >"$FLATPAK/$APP.flatpakref" <<EOF
+[Flatpak Ref]
+Title=Needful
+Name=$APP
+Branch=$BRANCH
+Url=$PAGES_URL/flatpak/repo/
+SuggestRemoteName=needful
+Homepage=$PAGES_URL/
+Icon=$PAGES_URL/needful.svg
+RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo
+IsRuntime=false
+GPGKey=$KEY_BASE64
+EOF
+cat >"$FLATPAK/install.html" <<EOF
+<h2>Any Linux, with Flatpak</h2>
+<pre>flatpak install --user $PAGES_URL/flatpak/$APP.flatpakref</pre>
+<p>Then open Needful from your app launcher, or run <code>flatpak run $APP</code>.
+New releases arrive with <code>flatpak update</code>. Version $VERSION, for x86_64.</p>
+<p>The command line is <code>flatpak run $APP &lt;command&gt;</code>. The
+sandbox can't install services, so the phone page's service and the sync
+service need the Arch package, or a systemd unit of your own.</p>
+EOF
+
+pages_commit "Publish Needful $TAG for Flatpak"
+echo "Added $VERSION to $REPO and tagged $TAG."
+if [ "$PUBLISH" = 0 ]; then
+    echo "Nothing was pushed. Publish with: bin/release-flatpak --publish"
+    exit 0
+fi
+pages_publish "Needful $VERSION for Flatpak"
+echo "Published. Anyone can install it with:"
+echo "  flatpak install --user $PAGES_URL/flatpak/$APP.flatpakref"

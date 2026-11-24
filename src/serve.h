@@ -21,6 +21,12 @@ struct ServeSetup {
 
 constexpr int DefaultServePort = 8787;
 
+// Inside the Flatpak the sandbox reaches neither systemd nor your home
+// folder, so the commands that install services or the agent skill refuse
+// with this message instead of writing files nothing would ever read. Empty
+// outside a Flatpak.
+QString flatpakRefusal(const QString &what);
+
 // File name to contents, for ~/.config/systemd/user.
 QMap<QString, QByteArray> serviceUnits(const ServeSetup &setup);
 QString systemdUserDirectory();

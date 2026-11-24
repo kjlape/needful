@@ -172,7 +172,7 @@ before anything in it is unpacked.
 3. **GitHub Pages.** Pages is free for a public repository; a private one
    needs a paid plan (the site itself is public either way). The dmgs live in
    `macos/` on `gh-pages`, next to the Arch repository
-   ([releasing-for-arch.md](releasing-for-arch.md)), and the scripts share
+   ([releasing-for-linux.md](releasing-for-linux.md)), and the scripts share
    `bin/pages.sh`. GitHub refuses files over 100 MB.
 
 ### Each release

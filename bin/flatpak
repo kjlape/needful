@@ -1,0 +1,23 @@
+#!/bin/sh
+# Builds the Flatpak from this checkout, installs it for this user, and
+# writes build/needful.flatpak, a single file that installs on any Linux
+# with Flatpak. bin/release-flatpak publishes releases.
+set -eu
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+. "$ROOT/bin/pages.sh"
+. "$ROOT/bin/flatpak-lib.sh"
+
+refuse_tmp "$ROOT"
+setup_builder
+cd "$ROOT/flatpak"
+$BUILDER --user --force-clean --repo=repo --install \
+    --state-dir="${NEEDFUL_FLATPAK_STATE:-$ROOT/.flatpak-builder}" build-dir "$APP.yml"
+
+# Installs pull the KDE runtime from Flathub on their own.
+mkdir -p "$ROOT/build"
+flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+    repo "$ROOT/build/needful.flatpak" "$APP"
+
+echo "Installed $APP for $(id -un) and wrote $ROOT/build/needful.flatpak"
+echo "Run it with: flatpak run $APP"

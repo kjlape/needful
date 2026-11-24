@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Check with appstreamcli validate (no network needed with its no-net flag).
+     bin/release-flatpak adds each release's entry and points the screenshot
+     at its tag, in the copy it builds. -->
+<component type="desktop-application">
+  <id>io.github.kjlape.Needful</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Needful</name>
+  <summary>Routine tasks, most needful first</summary>
+  <developer id="io.github.kjlape">
+    <name>Kaleb Lape</name>
+  </developer>
+  <description>
+    <p>A to-do list that can't pile up. Needful holds the routine things that
+    keep a life running, like mowing, air filters, oil changes and invoices,
+    and shows you a short list ranked by how needful each one is.</p>
+    <ul>
+      <li>Needfulness grows with how late a task is, in units of its own rhythm</li>
+      <li>Contexts group tasks by where you do them, and nest</li>
+      <li>Routines share one task across several contexts, each with its own due date</li>
+      <li>Paired computers stay in step, and a phone page works over your network</li>
+      <li>Driven from the keyboard; press ? for every shortcut</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.kjlape.Needful.desktop</launchable>
+  <provides>
+    <binary>needful</binary>
+  </provides>
+  <url type="homepage">https://kjlape.github.io/needful/</url>
+  <url type="bugtracker">https://github.com/kjlape/needful/issues</url>
+  <url type="vcs-browser">https://github.com/kjlape/needful</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>The needful list</caption>
+      <image>https://raw.githubusercontent.com/kjlape/needful/master/docs/screenshot.png</image>
+    </screenshot>
+  </screenshots>
+  <categories>
+    <category>Utility</category>
+    <category>Office</category>
+  </categories>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <branding>
+    <color type="primary" scheme_preference="light">#ffd60a</color>
+    <color type="primary" scheme_preference="dark">#7a6500</color>
+  </branding>
+  <content_rating type="oars-1.1"/>
+  <releases>
+  </releases>
+</component>
