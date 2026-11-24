@@ -134,8 +134,8 @@ remote path, since the other computer's shell now reads it.
 
 ## Updates
 
-Releases go out like Flip's Flatpak repository: signed, from GitHub Pages,
-and checked against a key the app was installed with. On macOS that's
+Releases go out signed and are checked against a key the app was installed
+with. The feed is on GitHub Pages and the dmgs are on GitHub releases. On macOS that's
 [Sparkle](https://sparkle-project.org), which `bin/build-macos` downloads
 (a pinned version, checked against its hash) and builds in when
 `macos/sparkle-public-key` exists.
@@ -144,7 +144,7 @@ and checked against a key the app was installed with. On macOS that's
 | --- | --- |
 | GPG key signs the OSTree repo | An Ed25519 key signs each dmg and the feed |
 | The `.flatpakref` pins the public key | `SUPublicEDKey` in the installed app's `Info.plist` pins it |
-| The repo on `gh-pages` | `appcast.xml` and the newest dmgs on `gh-pages` |
+| The repo on `gh-pages` | `appcast.xml` on `gh-pages`, each dmg on its version's GitHub release |
 | `flatpak update` | The app checks daily and offers the update; Check for Updates… in the app menu checks now |
 
 The first download is trusted because it came over HTTPS from your Pages
@@ -169,23 +169,25 @@ before anything in it is unpacked.
    new app and asks again for Keychain items and permissions; one
    certificate keeps the app's identity, and Sparkle checks each update was
    signed with it. Back it up too (export it as a .p12).
-3. **GitHub Pages.** Pages is free for a public repository; a private one
-   needs a paid plan (the site itself is public either way). The dmgs live in
-   `macos/` on `gh-pages`, next to the Arch repository
-   ([releasing-for-linux.md](releasing-for-linux.md)), and the scripts share
-   `bin/pages.sh`. GitHub refuses files over 100 MB.
+3. **GitHub Pages and releases.** Pages is free for a public repository; a
+   private one needs a paid plan (the site itself is public either way). The
+   appcast and the install page live on `gh-pages`, next to the Linux setup
+   ([releasing-for-linux.md](releasing-for-linux.md)). The dmg goes on the
+   tag's GitHub release, uploaded with `gh` (`gh auth login` once), which
+   takes files up to 2 GB. The scripts share `bin/pages.sh`.
 
 ### Each release
 
 Bump `VERSION` (and `pkgbuild/PKGBUILD`), commit, then on the Mac:
 
 ```sh
-bin/release-macos            # tags v<version>, builds, prepares build/pages
-bin/release-macos --publish  # pushes the tag and gh-pages
+bin/release-macos            # tags v<version>, builds into build/release-assets/, prepares build/pages
+bin/release-macos --publish  # pushes the tag, uploads the dmg to its release, pushes gh-pages
 ```
 
-The release notes are the commit subjects since the last tag. The newest
-three versions stay downloadable. Copies that run the phone page's service
+The release notes are the commit subjects since the last tag, in both the
+appcast and the GitHub release. The appcast lists the newest three versions;
+every dmg stays on its release. Copies that run the phone page's service
 (`serve install`) should run `needful serve restart` after updating, as on
 Linux.
 

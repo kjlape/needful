@@ -1,8 +1,11 @@
-# Shared by bin/release-macos and bin/release-arch, which publish to the same
-# gh-pages branch, each in its own folder. Sourced, not run; set ROOT first.
+# Shared by the release scripts, which publish to the same gh-pages branch,
+# each in its own folder, and to the same GitHub release for each tag. The
+# binaries (dmgs, packages) go on the release; gh-pages keeps the text that
+# points to them. Sourced, not run; set ROOT first.
 
 GITHUB_REPO=kjlape/needful
 PAGES_URL="${NEEDFUL_PAGES_URL:-https://kjlape.github.io/needful}"
+RELEASES_URL="https://github.com/$GITHUB_REPO/releases"
 PAGES="$ROOT/build/pages"
 
 die() {
@@ -32,10 +35,12 @@ parse_publish() {
 # Sets VERSION and TAG from needful.pro, on a clean checkout, and SOURCE to
 # the commit that is the release: TAG's, once it's made, so commits after it
 # (a fix to these scripts, say) change how it's published but not what ships.
+# ASSETS is where the release's binaries wait for --publish to upload them.
 release_version() {
     [ -z "$(git -C "$ROOT" status --porcelain)" ] || die "commit or stash your changes first."
     VERSION="$(sed -n 's/^VERSION *= *//p' "$ROOT/needful.pro")"
     TAG="v$VERSION"
+    ASSETS="$ROOT/build/release-assets/$TAG"
     SOURCE="$(git -C "$ROOT" rev-parse HEAD)"
     if git -C "$ROOT" rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
         tagged="$(git -C "$ROOT" rev-parse "$TAG^{commit}")"
@@ -47,14 +52,18 @@ release_version() {
     fi
 }
 
-# The release notes as <li> lines: commit subjects since the last release,
+# The release notes, one line each: commit subjects since the last release,
 # oldest first.
-release_notes() {
+release_subjects() {
     last="$(git -C "$ROOT" describe --tags --abbrev=0 --match 'v*' "$SOURCE^" 2>/dev/null || true)"
-    notes=""
-    [ -z "$last" ] || notes="$(git -C "$ROOT" log --reverse --format=%s "$last..$SOURCE" |
-        sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g' | sed 's|.*|<li>&</li>|')"
-    printf '%s\n' "${notes:-<li>First release.</li>}"
+    subjects=""
+    [ -z "$last" ] || subjects="$(git -C "$ROOT" log --reverse --format=%s "$last..$SOURCE")"
+    printf '%s\n' "${subjects:-First release.}"
+}
+
+# The release notes as <li> lines.
+release_notes() {
+    release_subjects | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g' | sed 's|.*|<li>&</li>|'
 }
 
 # Makes build/pages a checkout of the gh-pages branch as published, so each
@@ -81,8 +90,8 @@ pages_checkout() {
     fi
 }
 
-# Writes index.html from each platform's install.html (macos/, arch/), so
-# a release for one platform keeps the other's instructions, then commits
+# Writes index.html from each platform's install.html (macos/, arch/,
+# flatpak/), so a release for one platform keeps the others' instructions, then commits
 # the whole branch as one parentless commit, so dropped downloads don't stay
 # in its history. Tags this commit TAG.
 pages_commit() { # message
@@ -120,6 +129,7 @@ EOF
 
 # For a version gh-pages on origin already has: with --publish, finishes a
 # publish that stopped after pushing gh-pages; without it, says so. Exits.
+# The release's files went up before gh-pages did, so none are uploaded.
 pages_finish() { # what
     [ "$PUBLISH" = 1 ] || die "$1 is already published. Bump the version to release another."
     echo "$1 is already on gh-pages; finishing its publish."
@@ -128,11 +138,38 @@ pages_finish() { # what
     exit 0
 }
 
-# Pushes the tag and gh-pages, and turns on GitHub Pages the first time.
-pages_publish() { # what, for the question
+# Uploads files to TAG's GitHub release, making the release if there isn't
+# one yet. A file it already has is replaced: that's one from a publish that
+# stopped before gh-pages pointed to it, and the gh-pages about to be pushed
+# carries the signatures of this run's files, not that one's.
+#
+# Only bin/release-arch marks a release Latest (RELEASE_LATEST=1), since
+# pacman finds its repository at releases/latest, and the Mac's release of a
+# version can come before Arch's.
+release_upload() { # files
+    if ! gh release view "$TAG" -R "$GITHUB_REPO" >/dev/null 2>&1; then
+        release_subjects | sed 's/^/- /' |
+            gh release create "$TAG" -R "$GITHUB_REPO" --verify-tag --latest=false \
+                --title "Needful $VERSION" --notes-file - >/dev/null
+    fi
+    for file in "$@"; do
+        [ -f "$file" ] || die "$file is missing."
+    done
+    [ "$#" = 0 ] || gh release upload "$TAG" -R "$GITHUB_REPO" --clobber "$@"
+    [ "${RELEASE_LATEST:-}" != 1 ] || gh release edit "$TAG" -R "$GITHUB_REPO" --latest >/dev/null
+}
+
+# Pushes the tag, uploads the files to its GitHub release, then pushes
+# gh-pages, which points to them, and turns on GitHub Pages the first time.
+pages_publish() { # what, for the question, then the release's files
+    what="$1"
+    shift
     command -v gh >/dev/null || die "gh is not installed. Install github-cli, then gh auth login."
-    confirm "Push $TAG, replace gh-pages on origin with $1, and serve it on GitHub Pages?"
+    question="Push $TAG"
+    [ "$#" = 0 ] || question="$question, upload $# files to its GitHub release"
+    confirm "$question, replace gh-pages on origin with $what, and serve it on GitHub Pages?"
     git -C "$ROOT" push -q origin "$TAG"
+    release_upload "$@"
     git -C "$PAGES" push -q --force origin gh-pages
     # A public repository turns Pages on by itself when gh-pages is first
     # pushed, sometimes between a check and this request, so "already

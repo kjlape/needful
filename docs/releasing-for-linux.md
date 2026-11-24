@@ -1,9 +1,15 @@
 # Releasing for Linux
 
-Linux gets two channels, both on the same GitHub Pages site and signed with
-the same GPG key (`NEEDFUL_GPG_KEY`): a pacman repository for Arch, and a
-Flatpak repository for every other distribution. Release both from the same
-commit; each script keeps the other's files and section of the page.
+Linux gets two channels, both set up from the same GitHub Pages site and
+signed with the same GPG key (`NEEDFUL_GPG_KEY`): a pacman repository for
+Arch, and a Flatpak repository for every other distribution. Release both
+from the same commit; each script keeps the other's files and section of the
+page.
+
+Binaries go on the tag's GitHub release, and Pages holds the text that points
+to them: the install page, the keys, the macOS appcast. The Flatpak
+repository is the exception. OSTree serves a tree of thousands of small
+objects, which release assets can't hold, so it stays on Pages.
 
 ```sh
 bin/release-arch --publish
@@ -12,9 +18,8 @@ bin/release-flatpak --publish
 
 ## Arch
 
-`bin/release-arch` publishes Needful as a pacman repository on GitHub Pages,
-like Flip's Flatpak repository: static files on `gh-pages`, signed with a
-GPG key each machine trusts once. Machines that add it get every release
+`bin/release-arch` publishes Needful as a pacman repository on the latest
+GitHub release, signed with a GPG key each machine trusts once. Machines that add it get every release
 with `pacman -Syu`, and pacman refuses a package or package list that key
 didn't sign.
 
@@ -22,7 +27,7 @@ didn't sign.
 | --- | --- |
 | GPG key signs the OSTree repo | The same kind of key signs each package and the database |
 | The `.flatpakref` pins the key | `pacman-key --lsign-key` trusts it, on that machine only |
-| The repo on `gh-pages` | `arch/x86_64/` on `gh-pages` |
+| The repo on `gh-pages` | The package and its database on the latest GitHub release |
 | `flatpak update` | `pacman -Syu` |
 
 ### Set up once
@@ -40,6 +45,8 @@ didn't sign.
    without it, every machine has to trust a new key by hand.
 3. **GitHub Pages**: free for a public repository; a private one needs a
    paid plan. The site is public either way.
+4. **gh**, logged in (`gh auth login`), to make the GitHub release and
+   upload to it.
 
 ### Each release
 
@@ -47,15 +54,16 @@ Bump `VERSION` in `needful.pro` and `pkgver` in `pkgbuild/PKGBUILD`, commit,
 then:
 
 ```sh
-bin/release-arch            # tags v<version>, builds, signs, prepares build/pages
-bin/release-arch --publish  # pushes the tag and gh-pages
+bin/release-arch            # tags v<version>, builds and signs into build/release-assets/, prepares build/pages
+bin/release-arch --publish  # pushes the tag, uploads to the release and marks it Latest, pushes gh-pages
 ```
 
 `NEEDFUL_NO_CHROOT=1 bin/release-arch` rehearses with plain makepkg,
 without devtools; such a build can't be published.
 
-Only the newest package stays, since pacman installs only the newest. The
-debug package isn't published. Releasing from the same commit on the Mac
+Each release carries its own package and a database of only that package;
+pacman reads whichever release is Latest. The debug package isn't
+published. Releasing from the same commit on the Mac
 (`bin/release-macos`) adds the macOS download to the same page; each script
 keeps the other's files.
 
@@ -65,13 +73,16 @@ keeps the other's files.
   (`$startdir/..`). The chroot can't see it, so `bin/release-arch` exports
   the commit with `git archive` and fills in `_tarball` and `_sha256` in a
   copy of the PKGBUILD.
+- **`releases/latest/download`.** GitHub redirects it to the files of the
+  release marked Latest, so pacman's `Server` line never changes. Only
+  `bin/release-arch` marks a release Latest. The other scripts make the
+  release with `--latest=false`, since the Mac may release a version before
+  Arch does, and a Latest release without `needful.db` would make
+  `pacman -Syu` fail. Don't make releases by hand for the same reason.
 - **No symlinks.** `repo-add` makes `needful.db` a symlink to
-  `needful.db.tar.gz`, and GitHub Pages doesn't serve symlinks, so each
-  becomes a copy.
-- **`repo-add --verify`** refuses to add to a published database whose
-  signature doesn't check out, so a tampered `gh-pages` stops the release.
-- **One parentless commit.** `gh-pages` holds only what's published now, so
-  old packages don't pile up in its history.
+  `needful.db.tar.gz`. pacman only fetches the short names, so those become
+  the files and the long ones aren't uploaded.
+- **One parentless commit.** `gh-pages` holds only what's published now.
 - **x86_64 only.** The PKGBUILD also allows aarch64, but nothing builds it
   here.
 
@@ -90,11 +101,15 @@ Then, in `/etc/pacman.conf`:
 ```ini
 [needful]
 SigLevel = Required
-Server = https://kjlape.github.io/needful/arch/$arch
+Server = https://github.com/kjlape/needful/releases/latest/download
 ```
 
 and `sudo pacman -Syu needful`. A copy installed with `bin/install` has the
 same name, so the repository's next release replaces it.
+
+Machines set up before 0.15.0 have `Server = https://kjlape.github.io/needful/arch/$arch`.
+That repository is gone, so `pacman -Syu` fails until the line is replaced
+with the one above.
 
 ## Flatpak
 

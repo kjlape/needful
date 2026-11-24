@@ -1,13 +1,17 @@
 #!/bin/sh
-# Publishes Needful as a signed pacman repository on GitHub Pages, so Arch
-# machines that add it get new releases with pacman -Syu.
+# Publishes Needful as a signed pacman repository on the latest GitHub
+# release, with its setup on GitHub Pages, so Arch machines that add it get
+# new releases with pacman -Syu.
 #
 #   bin/release-arch            Tag v<version> here, build the package in a
-#                               clean chroot, sign it, and add it to the
-#                               repository in build/pages, a checkout of the
-#                               gh-pages branch. Nothing leaves the machine.
-#   bin/release-arch --publish  Also push the tag and gh-pages, and turn on
-#                               GitHub Pages.
+#                               clean chroot, sign it and its one-package
+#                               database into build/release-assets/v<version>,
+#                               and update the setup in build/pages, a checkout
+#                               of the gh-pages branch. Nothing leaves the
+#                               machine.
+#   bin/release-arch --publish  Also push the tag, upload the repository to
+#                               the tag's GitHub release and mark it Latest,
+#                               push gh-pages, and turn on GitHub Pages.
 #
 # Runs on x86_64 Arch, on a clean commit whose VERSION (in needful.pro) is
 # newer than what's published. Needs devtools, for the clean chroot (it asks
@@ -45,11 +49,16 @@ PKGREL="$(printf '%s\n' "$PKGBUILD_TEXT" | sed -n 's/^pkgrel=//p')"
 FULL="$VERSION-$PKGREL"
 pages_checkout
 
-# arch/x86_64 is the repository: its database and the newest package, both
-# signed. pacman only ever installs the newest, so older ones are dropped.
-REPO="$PAGES/arch/x86_64"
-mkdir -p "$REPO"
-published="$(ls "$REPO" | sed -n "s/^$REPO_NAME-\([^-]*-[^-]*\)-x86_64\.pkg\.tar\.[a-z0-9]*\$/\1/p" | head -1)"
+# The repository is the newest package and a database of just it, both
+# signed, on the release marked Latest: pacman's Server is releases/latest/
+# download, which GitHub redirects to that release's files. Older releases
+# keep theirs. arch/ on gh-pages holds the setup and the version last
+# published.
+REPO="$ASSETS"
+mkdir -p "$REPO" "$PAGES/arch"
+# Before releases held it, the repository was arch/x86_64 on gh-pages.
+rm -rf "$PAGES/arch/x86_64"
+published="$(cat "$PAGES/arch/version" 2>/dev/null || true)"
 if [ -n "$published" ]; then
     [ "$REMOTE_PAGES" = 1 ] && [ "$published" = "$FULL" ] && pages_finish "Needful $FULL for Arch"
     # One made here by a run without --publish, and not on origin, is made again.
@@ -86,21 +95,25 @@ PACKAGE="$(basename "$PACKAGE_PATH")"
 [ -f "$PACKAGE_PATH" ] || die "the build made no $PACKAGE."
 cd "$ROOT"
 
-# Swaps the newest package in: the old one leaves the database and the folder.
-find "$REPO" -maxdepth 1 -name "$REPO_NAME-*.pkg.tar.*" ! -name "$PACKAGE" ! -name "$PACKAGE.sig" -delete
+# A fresh database each time, since each release carries its own.
+rm -f "$REPO/$REPO_NAME"-*.pkg.tar.* "$REPO/$REPO_NAME".db* "$REPO/$REPO_NAME".files*
 cp "$PACKAGE_PATH" "$REPO/$PACKAGE"
 gpg --batch --yes --local-user "$KEY" --detach-sign --output "$REPO/$PACKAGE.sig" "$REPO/$PACKAGE"
-# --verify refuses to add to a database whose signature doesn't check out.
-repo-add --quiet --verify --sign --key "$KEY" "$REPO/$REPO_NAME.db.tar.gz" "$REPO/$PACKAGE"
-rm -f "$REPO"/*.old "$REPO"/*.old.sig
-# repo-add makes needful.db a symlink to needful.db.tar.gz, and GitHub Pages
-# doesn't serve symlinks, so each becomes a copy.
+repo-add --quiet --sign --key "$KEY" "$REPO/$REPO_NAME.db.tar.gz" "$REPO/$PACKAGE"
+# repo-add makes needful.db a symlink to needful.db.tar.gz; pacman fetches
+# only the short names, so those become the files and the long ones go.
 for link in "$REPO_NAME.db" "$REPO_NAME.db.sig" "$REPO_NAME.files" "$REPO_NAME.files.sig"; do
     if [ -L "$REPO/$link" ]; then
         target="$(readlink "$REPO/$link")"
         rm "$REPO/$link"
-        cp "$REPO/$target" "$REPO/$link"
+        mv "$REPO/$target" "$REPO/$link"
     fi
+done
+# The release's files, as the arguments from here on.
+set -- "$REPO/$PACKAGE" "$REPO/$PACKAGE.sig"
+for name in "$REPO_NAME.db" "$REPO_NAME.db.sig" "$REPO_NAME.files" "$REPO_NAME.files.sig"; do
+    [ -f "$REPO/$name" ] || die "repo-add made no $name."
+    set -- "$@" "$REPO/$name"
 done
 
 gpg --export --armor "$KEY" >"$PAGES/arch/$REPO_NAME.gpg"
@@ -114,18 +127,22 @@ sudo pacman-key --lsign-key $FINGERPRINT</pre>
 <p>Add the repository to <code>/etc/pacman.conf</code>:</p>
 <pre>[$REPO_NAME]
 SigLevel = Required
-Server = $PAGES_URL/arch/\$arch</pre>
+Server = $RELEASES_URL/latest/download</pre>
 <p>Then install Needful $VERSION:</p>
 <pre>sudo pacman -Syu $REPO_NAME</pre>
 <p>New releases arrive with <code>pacman -Syu</code>. For x86_64.</p>
+<p>A <code>Server</code> line ending in <code>/arch/\$arch</code> is from before
+the repository moved to GitHub releases; replace it with this one.</p>
 EOF
+printf '%s\n' "$FULL" >"$PAGES/arch/version"
 
 pages_commit "Publish Needful $TAG for Arch"
-echo "Added $PACKAGE to $REPO and tagged $TAG."
+echo "Put $PACKAGE and its database in $REPO and tagged $TAG."
 if [ "$PUBLISH" = 0 ]; then
     echo "Nothing was pushed. Publish with: bin/release-arch --publish"
     exit 0
 fi
-pages_publish "Needful $FULL for Arch"
+RELEASE_LATEST=1
+pages_publish "Needful $FULL for Arch" "$@"
 echo "Published. Machines with the repository get $FULL with: sudo pacman -Syu"
 echo "Setup for new ones is at $PAGES_URL/"

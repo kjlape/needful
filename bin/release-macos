@@ -1,12 +1,14 @@
 #!/bin/sh
 # Publishes the macOS app so installed copies update themselves with Sparkle.
 #
-#   bin/release-macos            Tag v<version> here, build the signed app, and
-#                                add it to build/pages, a checkout of the
-#                                gh-pages branch, with a signed appcast.xml.
-#                                Nothing leaves the machine.
-#   bin/release-macos --publish  Also push the tag and gh-pages, and turn on
-#                                GitHub Pages.
+#   bin/release-macos            Tag v<version> here, build the signed dmg into
+#                                build/release-assets/v<version>, and add it to
+#                                the signed appcast.xml in build/pages, a
+#                                checkout of the gh-pages branch. Nothing
+#                                leaves the machine.
+#   bin/release-macos --publish  Also push the tag, upload the dmg to the
+#                                tag's GitHub release, push gh-pages, and turn
+#                                on GitHub Pages.
 #
 # Runs on a Mac, on a clean commit whose VERSION (in needful.pro) is newer
 # than anything published. Needs the Sparkle signing key in the login
@@ -16,8 +18,8 @@ set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 . "$ROOT/bin/pages.sh"
-# The newest releases stay downloadable; older ones are dropped, since every
-# copy of the app updates straight to the newest.
+# The appcast lists the newest releases; every copy of the app updates
+# straight to the newest, and older dmgs stay on their GitHub releases.
 KEEP=3
 
 parse_publish "$@"
@@ -32,11 +34,20 @@ security find-identity -p codesigning | grep -qF "\"$IDENTITY\"" ||
 release_version
 pages_checkout
 
-# macos/ holds the appcast's items (one per version, with its release
-# notes) and the newest dmgs.
+# macos/ holds the appcast's items, one per version, with its release notes
+# and a link to its dmg on the version's GitHub release.
 MACOS="$PAGES/macos"
 ITEMS="$MACOS/items"
 mkdir -p "$ITEMS"
+# Before releases held them, the dmgs were in macos/ on gh-pages. Each was
+# uploaded to its release as well, so its item points there now.
+for old in "$MACOS"/Needful-*.dmg; do
+    [ -f "$old" ] || continue
+    old="$(basename "$old" .dmg)"
+    old="${old#Needful-}"
+    [ -f "$ITEMS/$old.xml" ] && sed -i '' "s|$PAGES_URL/macos/Needful-$old\.dmg|$RELEASES_URL/download/v$old/Needful-$old.dmg|" "$ITEMS/$old.xml"
+    rm "$MACOS/Needful-$old.dmg"
+done
 # A version already on origin is never replaced: copies that have it would
 # never see the new build. One only made here, by a run without --publish,
 # is made again.
@@ -60,11 +71,13 @@ fi
 NEEDFUL_CODESIGN_IDENTITY="$IDENTITY" NEEDFUL_PAGES_URL="$PAGES_URL" "$TREE/bin/build-macos"
 SPARKLE_BIN="$(ls -d "$TREE"/build/sparkle/*/bin | sort -V | tail -1)"
 DMG_NAME="Needful-$VERSION.dmg"
-cp "$TREE/build/macos/$DMG_NAME" "$MACOS/$DMG_NAME"
+DMG="$ASSETS/$DMG_NAME"
+mkdir -p "$ASSETS"
+cp "$TREE/build/macos/$DMG_NAME" "$DMG"
 
 # Signs with the private key generate_keys put in the login Keychain, and
 # prints the attributes the appcast needs: sparkle:edSignature and length.
-SIGNATURE="$("$SPARKLE_BIN/sign_update" "$MACOS/$DMG_NAME")"
+SIGNATURE="$("$SPARKLE_BIN/sign_update" "$DMG")"
 case "$SIGNATURE" in *edSignature=*) ;; *) die "sign_update gave no signature: $SIGNATURE" ;; esac
 
 cat >"$ITEMS/$VERSION.xml" <<EOF
@@ -77,13 +90,13 @@ cat >"$ITEMS/$VERSION.xml" <<EOF
       <description><![CDATA[<ul>
 $(release_notes)
 </ul>]]></description>
-      <enclosure url="$PAGES_URL/macos/$DMG_NAME" type="application/octet-stream" $SIGNATURE/>
+      <enclosure url="$RELEASES_URL/download/$TAG/$DMG_NAME" type="application/octet-stream" $SIGNATURE/>
     </item>
 EOF
 
-# Only the newest $KEEP releases stay, each with its dmg.
+# Only the newest $KEEP releases stay in the appcast.
 ls "$ITEMS" | sed 's/\.xml$//' | sort -rV | tail -n "+$((KEEP + 1))" | while IFS= read -r old; do
-    rm -f "$ITEMS/$old.xml" "$MACOS/Needful-$old.dmg"
+    rm -f "$ITEMS/$old.xml"
 done
 
 {
@@ -108,7 +121,7 @@ EOF
 
 cat >"$MACOS/install.html" <<EOF
 <h2>macOS</h2>
-<p><a href="macos/$DMG_NAME">Download Needful $VERSION</a>, open it, and drag Needful to Applications.</p>
+<p><a href="$RELEASES_URL/download/$TAG/$DMG_NAME">Download Needful $VERSION</a>, open it, and drag Needful to Applications.</p>
 <p>It isn't notarized by Apple, so the first time you open it macOS refuses.
 Open System Settings, then Privacy &amp; Security, and click Open Anyway. Or, in Terminal:</p>
 <pre>xattr -dr com.apple.quarantine /Applications/Needful.app</pre>
@@ -116,11 +129,11 @@ Open System Settings, then Privacy &amp; Security, and click Open Anyway. Or, in
 EOF
 
 pages_commit "Publish Needful $TAG for macOS"
-echo "Added $VERSION to $PAGES and tagged $TAG."
+echo "Built $DMG, added $VERSION to the appcast in $PAGES, and tagged $TAG."
 if [ "$PUBLISH" = 0 ]; then
     echo "Nothing was pushed. Publish with: bin/release-macos --publish"
     exit 0
 fi
-pages_publish "Needful $VERSION for macOS"
+pages_publish "Needful $VERSION for macOS" "$DMG"
 echo "Published. Installed copies find $VERSION at $PAGES_URL/appcast.xml,"
 echo "and new installs start at $PAGES_URL/"

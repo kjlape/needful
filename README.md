@@ -381,9 +381,9 @@ bin/test      # the tests, offscreen
 bin/install   # an Arch package, so it shows up in the app launcher
 ```
 
-Releases go out as a signed pacman repository and a signed Flatpak
-repository on GitHub Pages, so installs update with `pacman -Syu` or
-`flatpak update`: see [docs/releasing-for-linux.md](docs/releasing-for-linux.md).
+Releases go out as a signed pacman repository on GitHub releases and a
+signed Flatpak repository on GitHub Pages, so installs update with
+`pacman -Syu` or `flatpak update`: see [docs/releasing-for-linux.md](docs/releasing-for-linux.md).
 
 ### Flatpak
 
@@ -440,7 +440,8 @@ to Applications. It isn't notarized, so on another Mac the first launch needs
 Open Anyway in System Settings, Privacy & Security.
 
 Released builds update themselves with [Sparkle](https://sparkle-project.org),
-from a signed feed on GitHub Pages: `bin/release-macos` publishes one. Setting
+from a signed feed on GitHub Pages that points to dmgs on GitHub releases:
+`bin/release-macos` publishes both. Setting
 up the keys is in [docs/building-for-macos.md](docs/building-for-macos.md#updates).
 
 Double-clicking opens the window. The command line is the same program:
