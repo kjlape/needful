@@ -118,8 +118,14 @@ pages_publish() { # what, for the question
     confirm "Push $TAG, replace gh-pages on origin with $1, and serve it on GitHub Pages?"
     git -C "$ROOT" push -q origin "$TAG"
     git -C "$PAGES" push -q --force origin gh-pages
+    # A public repository turns Pages on by itself when gh-pages is first
+    # pushed, sometimes between a check and this request, so "already
+    # enabled" (409) counts as on.
     if ! gh api "repos/$GITHUB_REPO/pages" >/dev/null 2>&1; then
-        gh api -X POST "repos/$GITHUB_REPO/pages" -f "source[branch]=gh-pages" -f "source[path]=/" >/dev/null
-        echo "Turned on GitHub Pages; the first deploy takes a minute or two."
+        if output="$(gh api -X POST "repos/$GITHUB_REPO/pages" -f "source[branch]=gh-pages" -f "source[path]=/" 2>&1)"; then
+            echo "Turned on GitHub Pages; the first deploy takes a minute or two."
+        else
+            case "$output" in *409*) ;; *) die "couldn't turn on GitHub Pages: $output" ;; esac
+        fi
     fi
 }
