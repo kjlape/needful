@@ -3,19 +3,28 @@ import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
 
-// Pairing your own computers, by a code one shows and the other types. Both
-// show the same fingerprint, so you can check you paired with your own.
+// Pairing your own computers, or sharing one universe with someone else's,
+// by a code one shows and the other types. Both show the same fingerprint,
+// so you can check who you're pairing or sharing with.
+//
+// mode is pair or share (showing a code), or join or joinUniverse (typing one).
 Dialog {
     id: dialog
     anchors.centerIn: parent
     modal: true
     width: Math.min(parent.width - 48, 480)
-    title: mode === "pair" ? qsTr("Pair a computer") : qsTr("Join a computer")
+    title: mode === "pair" ? qsTr("Pair a computer")
+           : mode === "join" ? qsTr("Join a computer")
+           : mode === "share" ? qsTr("Share “%1”").arg(label)
+           : qsTr("Join a shared universe")
     Material.roundedScale: theme.radius
 
     property string mode: "pair"
+    property string universe: ""
+    property string label: ""
     readonly property string state: peers.state
-    readonly property bool asking: mode === "join" && (state === "" || state === "failed")
+    readonly property bool showing: mode === "pair" || mode === "share"
+    readonly property bool asking: !showing && (state === "" || state === "failed")
 
     function openPair() {
         mode = "pair"
@@ -23,8 +32,16 @@ Dialog {
         peers.pair()
     }
 
-    function openJoin() {
-        mode = "join"
+    function openShare(u) {
+        mode = "share"
+        universe = u.name
+        label = u.label
+        open()
+        peers.share(u.name)
+    }
+
+    function openJoin(kind) {
+        mode = kind || "join"
         peers.cancel()
         codeField.text = ""
         atField.text = ""
@@ -33,7 +50,11 @@ Dialog {
     }
 
     function join() {
-        if (codeField.text.trim() !== "")
+        if (codeField.text.trim() === "")
+            return
+        if (mode === "joinUniverse")
+            peers.joinUniverse(codeField.text.trim(), atField.text.trim())
+        else
             peers.join(codeField.text.trim(), atField.text.trim())
     }
 
@@ -48,14 +69,16 @@ Dialog {
 
         // Showing a code.
         Label {
-            visible: dialog.mode === "pair" && dialog.state === "pairing"
+            visible: dialog.showing && dialog.state === "pairing"
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
             color: "#a0a0a8"
-            text: qsTr("On the other computer, choose Join a computer and type this code:")
+            text: dialog.mode === "share"
+                  ? qsTr("On their computer, choose Join a shared universe and type this code. They get “%1” and nothing else.").arg(dialog.label)
+                  : qsTr("On the other computer, choose Join a computer and type this code:")
         }
         TextEdit {
-            visible: dialog.mode === "pair" && dialog.state === "pairing"
+            visible: dialog.showing && dialog.state === "pairing"
             readOnly: true
             selectByMouse: true
             text: peers.code
@@ -68,7 +91,7 @@ Dialog {
             font.bold: true
         }
         Label {
-            visible: dialog.mode === "pair" && dialog.state === "pairing"
+            visible: dialog.showing && dialog.state === "pairing"
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
             text: qsTr("This computer is “%1”  %2. The code works once, for a few minutes.")
@@ -80,7 +103,8 @@ Dialog {
             id: codeField
             visible: dialog.asking
             Layout.fillWidth: true
-            placeholderText: qsTr("Code, like 7-violet-crumble-tango")
+            placeholderText: dialog.mode === "joinUniverse" ? qsTr("Code, like 4-amber-lantern-quiet")
+                                                            : qsTr("Code, like 7-violet-crumble-tango")
             onAccepted: dialog.join()
         }
         TextField {
@@ -96,8 +120,11 @@ Dialog {
             visible: dialog.state === "confirm"
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
-            text: qsTr("Pair with “%1”  %2? Check that the other computer shows the same.")
-                  .arg(peers.otherName).arg(peers.otherFingerprint)
+            text: peers.universe !== ""
+                  ? qsTr("Join “%1” from “%2”  %3? Check that their computer shows the same. It goes beside your own list, which stays yours.")
+                    .arg(peers.universe).arg(peers.otherName).arg(peers.otherFingerprint)
+                  : qsTr("Pair with “%1”  %2? Check that the other computer shows the same.")
+                    .arg(peers.otherName).arg(peers.otherFingerprint)
         }
 
         RowLayout {
@@ -134,15 +161,15 @@ Dialog {
         }
         Button {
             visible: dialog.state === "confirm"
-            text: qsTr("Pair")
+            text: peers.universe !== "" ? qsTr("Join") : qsTr("Pair")
             highlighted: true
             onClicked: peers.answer(true)
         }
         Button {
-            visible: dialog.mode === "pair" && dialog.state === "failed"
+            visible: dialog.showing && dialog.state === "failed"
             text: qsTr("New code")
             highlighted: true
-            onClicked: peers.pair()
+            onClicked: dialog.mode === "share" ? peers.share(dialog.universe) : peers.pair()
         }
     }
 }

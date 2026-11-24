@@ -8,7 +8,7 @@
 class PeerLink;
 class LinkClient;
 
-// Pairing, joining and unpairing from the window, through the link this
+// Pairing, joining, sharing a universe and unpairing from the window, through the link this
 // window holds, or through whichever Needful here holds it.
 //
 // state is "" (nothing going on), "pairing" (showing a code), "joining"
@@ -23,6 +23,8 @@ class PeerPanel : public QObject {
     Q_PROPERTY(QString thisFingerprint READ thisFingerprint NOTIFY changed)
     Q_PROPERTY(QString otherName READ otherName NOTIFY changed)
     Q_PROPERTY(QString otherFingerprint READ otherFingerprint NOTIFY changed)
+    // The universe being shared or joined, or empty when pairing a computer.
+    Q_PROPERTY(QString universe READ universe NOTIFY changed)
     // Paired computers, as {id, name, fingerprint}.
     Q_PROPERTY(QVariantList devices READ devices NOTIFY devicesChanged)
 
@@ -38,10 +40,18 @@ public:
     QString thisFingerprint() const { return m_thisFingerprint; }
     QString otherName() const { return m_otherName; }
     QString otherFingerprint() const { return m_otherFingerprint; }
+    QString universe() const { return m_universe; }
     QVariantList devices() const { return m_devices; }
 
     Q_INVOKABLE void pair();
     Q_INVOKABLE void join(const QString &code, const QString &at);
+    // Sharing one universe, and joining one someone shared.
+    Q_INVOKABLE void share(const QString &universe);
+    Q_INVOKABLE void joinUniverse(const QString &code, const QString &at);
+    // {yours: "desktop, laptop", others: [{id, name, fingerprint, status}]}
+    Q_INVOKABLE QVariantMap members(const QString &universe) const;
+    // Empty when done, or why not.
+    Q_INVOKABLE QString unshare(const QString &universe, const QString &id);
     Q_INVOKABLE void answer(bool accept);
     Q_INVOKABLE void cancel();
     Q_INVOKABLE bool unpair(const QString &id);
@@ -49,17 +59,21 @@ public:
 signals:
     void changed();
     void devicesChanged();
+    // A shared universe was joined here, under this name.
+    void joinedUniverse(const QString &name);
 
 private:
     template <typename Source> void wire(Source *source);
     void set(const QString &state, const QString &message = {});
     void loadDevices();
     bool useLink();
+    bool connectClient();
+    QString usual() const;
 
     PeerLink *m_link;
     std::unique_ptr<LinkClient> m_client;
     QString m_dir;
-    QString m_state, m_code, m_message, m_thisName, m_thisFingerprint, m_otherName, m_otherFingerprint;
+    QString m_state, m_code, m_message, m_thisName, m_thisFingerprint, m_otherName, m_otherFingerprint, m_universe;
     QVariantList m_devices;
     QTimer m_poll;
 };

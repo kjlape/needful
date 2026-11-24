@@ -15,6 +15,7 @@
 #include <memory>
 
 #include "devices.h"
+#include "members.h"
 #include "sync.h"
 
 struct NeedfulLink;
@@ -36,6 +37,11 @@ struct NeedfulLink;
 // service, or `needful sync link`); the others, and the command line, ask it
 // to pair through a local socket. What it sees is kept in link-state.json,
 // beside the data file, for `sync status` and the window's footer to read.
+//
+// A universe can also be shared with someone else's computer, by the same
+// kind of code (see members.h). That computer gets only that universe: it
+// is offered nothing else, sent nothing else, and never sent the list of
+// your computers, and what it offers is taken only for universes it's in.
 class PeerLink : public QObject {
     Q_OBJECT
 public:
@@ -60,6 +66,7 @@ public:
     bool running() const { return m_link != nullptr; }
     QString listIdOf(const QString &universe) const;
     QString appDir() const { return m_dir; }
+    QString usualDataPath() const { return m_usual; }
     QString id() const { return m_devices.id(); }
     int port() const { return m_port; }
     QString name() const;
@@ -67,8 +74,12 @@ public:
     // Pairing from this end: pairCode, then paired or failed.
     void pair();
     void cancelPair();
+    // Sharing one universe from this end: pairCode, then paired or failed.
+    void share(const QString &universe);
     // Joining from this end: confirm, then (after answer(true)) joined or failed.
-    void join(const QString &code, const QString &at = {});
+    // With universe true, joins a universe someone shared rather than
+    // pairing this computer.
+    void join(const QString &code, const QString &at = {}, bool universe = false);
     void answer(bool accept);
 
     // Tests and `sync status`: whether a device is connected now, and how.
@@ -84,8 +95,10 @@ public:
 signals:
     void pairCode(const QString &code, const QString &name, const QString &fingerprint);
     void paired(const QString &name, const QString &fingerprint);
-    void confirm(const QString &name, const QString &fingerprint);
+    // universe is the shared universe's name, or empty when pairing a computer.
+    void confirm(const QString &name, const QString &fingerprint, const QString &universe);
     // name, fingerprint, already (the same list), tasks/contexts/history merged in, this (this machine's name).
+    // Joining a universe: universe (its name here), shared true, already, tasks.
     void joined(const QVariantMap &result);
     void failed(const QString &message);
     // A machine file went to a peer: list id, machine id, device id.
@@ -104,6 +117,11 @@ private:
         QString peer, list, folder;
         QSet<QString> waiting;
     };
+    struct ShareJoin {
+        QString peer, list, universe;
+        bool already = false, offered = false;
+        QSet<QString> waiting;
+    };
 
     void onEvents();
     void handle(const QJsonObject &event);
@@ -118,10 +136,20 @@ private:
     void handleOffer(const QString &peer, const QJsonArray &lists);
     void storeFile(const QString &peer, const QJsonObject &message);
     void finishJoin();
+    void finishShareJoin();
+    void pairedShare(const QString &id, const QJsonObject &theirs, const QStringList &addresses);
+    // Your own computers get everything; members only the lists they're in.
+    bool own(const QString &peer) const;
+    bool allowed(const QString &peer, const List *list) const;
+    void sendMembers(const QString &peer);
+    void membersChanged();
+    bool addSelf();
+    void saveMembers();
+    void reloadMembers();
     void loadLists();
     bool ensureSynced(bool pairing = false);
     List *listById(const QString &id);
-    List *match(const QJsonObject &offered);
+    List *match(const QJsonObject &offered, bool fromOwn);
     List *mine();
     QString createUniverse(const QJsonObject &offered);
     QJsonObject info();
@@ -158,13 +186,18 @@ private:
 
     QString m_pairCode;
     QTimer m_pairExpiry;
-    QString m_joinCode, m_joinFrom, m_joinRelay;
+    QString m_shareList, m_shareUniverse; // Sharing a universe while the code is up.
+    QString m_joinCode, m_joinFrom, m_joinRelay, m_refusal;
+    bool m_joinUniverse = false;
+    std::unique_ptr<ShareJoin> m_shareJoin;
+    QTimer m_shareJoinWait;
     QJsonObject m_joinInfo;
     std::unique_ptr<Staging> m_staging;
 
     QFileSystemWatcher m_watcher;
     QTimer m_offerDelay, m_stateDelay, m_redial;
-    QByteArray m_devicesWritten;
+    QByteArray m_devicesWritten, m_membersWritten;
+    Members m_members;
     std::unique_ptr<QLocalServer> m_server;
 };
 
@@ -185,6 +218,29 @@ struct PeerStatus {
     static PeerStatus read(const QString &appDir, const SyncFolder *list);
 };
 
+// Who a universe is shared with, read from the files, for `universe
+// members` and the window's People dialog; and removing someone from it,
+// which the Needful holding the link passes on to the rest of the universe.
+struct UniverseMembers {
+    struct Entry {
+        Members::Member member;
+        QString link;    // local, direct, relay, or empty for not connected
+        QDateTime seen;  // Last connected; invalid for never.
+        QString via;     // The member it gets the universe through, by name, when not one of yours.
+    };
+    QString list;        // Empty when it isn't a sync folder yet.
+    QStringList yours;   // This computer and your paired computers, by name.
+    QList<Entry> others; // Everyone else in it.
+    bool running = false;
+    static UniverseMembers read(const QString &usualDataPath, const QString &universe);
+    // The id a universe's list goes by between computers, or empty.
+    static QString listIdOf(const QString &dataPath);
+    // Removes who (a name or fingerprint) and the computers that came with
+    // them. Returns their names, or an empty list with error set.
+    static QStringList remove(const QString &usualDataPath, const QString &universe, const QString &who,
+                              QString *error);
+};
+
 // Asks the Needful holding the link here to pair or join, for the command
 // line and a window that doesn't hold it. Same signals as PeerLink.
 class LinkClient : public QObject {
@@ -193,14 +249,15 @@ public:
     explicit LinkClient(const QString &appDir, QObject *parent = nullptr);
     bool connectToOwner();
     void pair();
-    void join(const QString &code, const QString &at);
+    void share(const QString &universe);
+    void join(const QString &code, const QString &at, bool universe = false);
     void answer(bool accept);
     void cancel();
 
 signals:
     void pairCode(const QString &code, const QString &name, const QString &fingerprint);
     void paired(const QString &name, const QString &fingerprint);
-    void confirm(const QString &name, const QString &fingerprint);
+    void confirm(const QString &name, const QString &fingerprint, const QString &universe);
     void joined(const QVariantMap &result);
     void failed(const QString &message);
 

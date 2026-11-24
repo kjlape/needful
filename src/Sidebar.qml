@@ -18,6 +18,9 @@ Rectangle {
     signal unpairComputer(var device)
     signal addUniverse()
     signal removeUniverse(var universe)
+    signal shareUniverse(var universe)
+    signal universePeople(var universe)
+    signal joinUniverse()
 
     component SideItem: ItemDelegate {
         id: item
@@ -89,6 +92,7 @@ Rectangle {
                     MenuSeparator {}
                     MenuItem { text: qsTr("Pair a computer…"); onTriggered: sidebar.pairComputer() }
                     MenuItem { text: qsTr("Join a computer…"); onTriggered: sidebar.joinComputer() }
+                    MenuItem { text: qsTr("Join a shared universe…"); onTriggered: sidebar.joinUniverse() }
                     Menu {
                         id: unpairMenu
                         title: qsTr("Unpair")
@@ -110,7 +114,7 @@ Rectangle {
         }
 
         // Other universes, one click (or U) away; yours is where it starts.
-        // Right-click one to remove it; + adds another.
+        // Right-click one to share it or remove it; + adds another.
         Flow {
             visible: backend.universes.length > 1
             Layout.fillWidth: true
@@ -136,6 +140,9 @@ Rectangle {
                     Menu {
                         id: pillMenu
                         Material.roundedScale: theme.radius
+                        MenuItem { text: qsTr("Share…"); onTriggered: sidebar.shareUniverse(pill.modelData) }
+                        MenuItem { text: qsTr("People…"); onTriggered: sidebar.universePeople(pill.modelData) }
+                        MenuSeparator {}
                         MenuItem { text: qsTr("Remove from this computer"); onTriggered: sidebar.removeUniverse(pill.modelData) }
                     }
                     background: Rectangle {

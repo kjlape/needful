@@ -91,21 +91,30 @@ PeerLink::PeerLink(const QString &usualDataPath, QObject *parent) : PeerLink(usu
 PeerLink::PeerLink(const QString &usualDataPath, const Options &options, QObject *parent)
     : QObject(parent),
       m_usual(QFileInfo(usualDataPath.isEmpty() ? Backend::defaultDataPath() : usualDataPath).absoluteFilePath()),
-      m_dir(appDirFor(m_usual)), m_options(options), m_devices(m_dir) {
+      m_dir(appDirFor(m_usual)), m_options(options), m_devices(m_dir), m_members(m_dir) {
     m_pairExpiry.setSingleShot(true);
     m_pairExpiry.setInterval(PairMinutes * 60 * 1000);
     connect(&m_pairExpiry, &QTimer::timeout, this, [this] {
+        const QString message = failure("expired");
         cancelPair();
-        emit failed(failure("expired"));
+        emit failed(message);
     });
+    // Joined a universe but its files never came: say so with what did.
+    m_shareJoinWait.setSingleShot(true);
+    m_shareJoinWait.setInterval(30 * 1000);
+    connect(&m_shareJoinWait, &QTimer::timeout, this, &PeerLink::finishShareJoin);
     m_offerDelay.setSingleShot(true);
     m_offerDelay.setInterval(300);
     connect(&m_watcher, &QFileSystemWatcher::directoryChanged, this, [this] { m_offerDelay.start(); });
     connect(&m_watcher, &QFileSystemWatcher::fileChanged, this, [this] { m_offerDelay.start(); });
     connect(&m_offerDelay, &QTimer::timeout, this, [this] {
         reloadDevices();
+        reloadMembers();
         loadLists();
-        offerAll();
+        if (addSelf())
+            membersChanged();
+        else
+            offerAll();
     });
     m_stateDelay.setSingleShot(true);
     m_stateDelay.setInterval(200);
@@ -153,11 +162,16 @@ bool PeerLink::start(QString *error) {
     if (QFile::exists(m_devices.path()))
         nameThisDevice();
     m_devicesWritten = contents(m_devices.path());
+    if (!m_members.load(m_devices.id(), error)) {
+        m_lock.reset();
+        return false;
+    }
+    m_membersWritten = contents(m_members.path());
     loadState();
     ensureSynced();
     loadLists();
-    // A computer that has never paired stays off the network until asked to.
-    if (!m_devices.paired().isEmpty() && !startLink(error)) {
+    // A computer that has never paired or shared stays off the network until asked to.
+    if ((!m_devices.paired().isEmpty() || !m_members.trustedIds().isEmpty()) && !startLink(error)) {
         m_lock.reset();
         return false;
     }
@@ -182,8 +196,10 @@ bool PeerLink::start(QString *error) {
 // Named as its own list already calls it, when it syncs; done once this
 // computer pairs, so one that never does gets nothing new on disk.
 void PeerLink::nameThisDevice() {
-    if (m_devices.id().isEmpty())
+    if (m_devices.id().isEmpty()) {
         m_devices.load(nullptr, true);
+        m_members.load(m_devices.id(), nullptr);
+    }
     if (!m_devices.name().isEmpty())
         return;
     QString own = hostName();
@@ -242,7 +258,21 @@ void PeerLink::onEvents() {
     }
 }
 
-void PeerLink::applyTrust() { command({{"op", "trust"}, {"ids", QJsonArray::fromStringList(m_devices.trustedIds())}}); }
+void PeerLink::applyTrust() {
+    QStringList ids = m_devices.trustedIds();
+    for (const QString &id : m_members.trustedIds())
+        if (!ids.contains(id) && id != m_devices.id())
+            ids.append(id);
+    command({{"op", "trust"}, {"ids", QJsonArray::fromStringList(ids)}});
+}
+
+bool PeerLink::own(const QString &peer) const { return m_devices.trustedIds().contains(peer); }
+
+bool PeerLink::allowed(const QString &peer, const List *list) const {
+    if (!list || list->id.isEmpty())
+        return false;
+    return own(peer) || (!list->mine && m_members.allowed(list->id, peer));
+}
 
 void PeerLink::dial(const QString &id, const QStringList &addresses) {
     command({{"op", "dial"}, {"id", id}, {"addrs", QJsonArray::fromStringList(addresses)}});
@@ -257,6 +287,10 @@ void PeerLink::dialAll() {
                     addresses.append(a);
             dial(d.id, addresses);
         }
+    // People you share with: reached by key, at the relay, or where they were last.
+    for (const QString &id : m_members.trustedIds())
+        if (!m_up.contains(id) && !own(id) && id != m_devices.id())
+            dial(id, m_addrs.value(id));
 }
 
 void PeerLink::send(const QString &peer, const QJsonObject &message) {
@@ -270,6 +304,29 @@ QJsonObject PeerLink::info() {
 
 QString PeerLink::failure(const QString &reason) const {
     const bool host = !m_pairCode.isEmpty();
+    const bool sharing = !m_shareUniverse.isEmpty() || m_joinUniverse;
+    const QString again = !m_shareUniverse.isEmpty() ? "needful universe share " + m_shareUniverse
+                          : m_joinUniverse          ? QString("needful universe share")
+                                                    : QString("needful sync pair");
+    const QString nothing = sharing ? "Nothing was shared" : "Nothing was paired";
+    if (sharing && reason != "not_found" && reason != "bad_code" && reason != "unreachable" &&
+        reason != "unknown_host" && reason != "self") {
+        if (reason == "wrong_code")
+            return host ? QString("Someone tried a wrong code, so this one is spent. %1; run %2 again for a new code.")
+                              .arg(nothing, again)
+                        : QString("That code didn't match. %1, and the code is spent; run %2 again there for a new one.")
+                              .arg(nothing, again);
+        if (reason == "not_waiting")
+            return "That computer isn't waiting to share. Run needful universe share <name> there first; each code "
+                   "works once.";
+        if (reason == "declined")
+            return "Joining was declined. Nothing was shared.";
+        if (reason == "expired")
+            return QString("The code expired after %1 minutes without anyone joining. Run %2 again for a new one.")
+                .arg(PairMinutes)
+                .arg(again);
+        return "The connection dropped while sharing. Nothing was shared; try again with a new code.";
+    }
     if (reason == "wrong_code")
         return host ? "Someone tried a wrong code, so this one is spent. Nothing was paired; run needful sync pair "
                       "again for a new code."
@@ -321,10 +378,63 @@ void PeerLink::cancelPair() {
         return;
     command({{"op", "pair_close"}});
     m_pairCode.clear();
+    m_shareList.clear();
+    m_shareUniverse.clear();
     m_pairExpiry.stop();
 }
 
-void PeerLink::join(const QString &code, const QString &at) {
+void PeerLink::share(const QString &universe) {
+    QString error;
+    if (m_lock)
+        nameThisDevice();
+    if (!m_lock || (!m_link && !startLink(&error))) {
+        emit failed(error.isEmpty() ? QString("The link isn't running here.") : error);
+        return;
+    }
+    if (universe == Universes::Mine) {
+        emit failed("Your own list is only for your computers. Share a universe instead, or pair a computer with "
+                    "needful sync pair.");
+        return;
+    }
+    const QString path = Universes(m_usual).dataPath(universe);
+    if (path.isEmpty()) {
+        emit failed(QString("No universe named %1. See: needful universe").arg(universe));
+        return;
+    }
+    cancelPair();
+    // It must be a sync folder, with an id, for anyone else to have it.
+    m_shareUniverse = universe;
+    SyncFolder::Pointer pointer;
+    if (!readPointerAt(path, &pointer)) {
+        SyncFolder::Setup result;
+        if (!SyncFolder::setup(path, m_dir + "/lists/" + newFolderName(), name(), QDateTime::currentDateTime(),
+                               &result, &error, path)) {
+            m_shareUniverse.clear();
+            emit failed(QString("Could not get %1 ready to share: %2").arg(universe, error));
+            return;
+        }
+    } else if (pointer.elsewhere()) {
+        m_shareUniverse.clear();
+        emit failed(SyncFolder::elsewhereError(path));
+        return;
+    }
+    loadLists();
+    m_shareList = listIdOf(universe);
+    if (m_shareList.isEmpty()) {
+        m_shareUniverse.clear();
+        emit failed(QString("Could not get %1 ready to share.").arg(universe));
+        return;
+    }
+    QJsonObject offer = info();
+    offer.remove("mine");
+    offer["share"] = QJsonObject{{"id", m_shareList}, {"name", universe}};
+    m_pairCode = fullCode(newCode());
+    command({{"op", "pair_open"}, {"code", m_pairCode}, {"info", offer}});
+    m_pairExpiry.start();
+    emit pairCode(m_pairCode, name(), m_devices.fingerprint());
+}
+
+void PeerLink::join(const QString &code, const QString &at, bool universe) {
     QString error;
     if (m_lock)
         nameThisDevice();
@@ -351,7 +461,15 @@ void PeerLink::join(const QString &code, const QString &at) {
     }
     m_joinCode = code;
     m_joinRelay = codeRelay;
-    command({{"op", "pair_join"}, {"code", code}, {"at", at}, {"info", info()}});
+    m_joinUniverse = universe;
+    m_refusal.clear();
+    QJsonObject mine = info();
+    if (universe) {
+        // Nothing of this computer's own: only that it's joining a universe.
+        mine.remove("mine");
+        mine["joining"] = "universe";
+    }
+    command({{"op", "pair_join"}, {"code", code}, {"at", at}, {"info", mine}});
 }
 
 QString PeerLink::fullCode(const QString &words) const {
@@ -397,7 +515,9 @@ void PeerLink::handle(const QJsonObject &event) {
             m_addrs[id] = addresses;
         m_stateDelay.start();
         if (fresh) {
-            sendHello(id);
+            if (own(id))
+                sendHello(id);
+            sendMembers(id);
             sendOffer(id);
         }
         emit changed();
@@ -407,16 +527,37 @@ void PeerLink::handle(const QJsonObject &event) {
         m_stateDelay.start();
         emit changed();
     } else if (ev == "seen") {
-        if (m_devices.trustedIds().contains(id) && !m_up.contains(id))
+        if ((own(id) || m_members.trustedIds().contains(id)) && !m_up.contains(id))
             dial(id);
     } else if (ev == "msg") {
         handleMessage(id, parse(event.value("data").toString().toUtf8()));
     } else if (ev == "pair_confirm") {
         const QJsonObject theirs = event.value("info").toObject();
+        // A code for sharing a universe doesn't pair a computer, and the
+        // other way around: say which command it's for, and share nothing.
+        const bool sharing = theirs.value("share").isObject();
+        if (sharing != m_joinUniverse) {
+            m_refusal = sharing ? "That code shares a universe rather than pairing a computer. Nothing was paired. "
+                                  "Join it with: needful universe join <code>"
+                                : "That code pairs a computer rather than sharing a universe. Nothing was shared. "
+                                  "To make this one of its computers, use: needful sync join <code>";
+            answer(false);
+            return;
+        }
         m_joinInfo = theirs;
-        emit confirm(theirs.value("name").toString(), Devices::fingerprintOf(id));
+        emit confirm(theirs.value("name").toString(), Devices::fingerprintOf(id),
+                     theirs.value("share").toObject().value("name").toString());
     } else if (ev == "paired") {
         const QJsonObject theirs = event.value("info").toObject();
+        if ((!m_shareList.isEmpty() && m_joinCode.isEmpty()) || (m_joinUniverse && !m_joinCode.isEmpty())) {
+            QStringList addresses;
+            for (const auto &a : event.value("addrs").toArray())
+                addresses.append(a.toString());
+            pairedShare(id, theirs, addresses);
+            m_stateDelay.start();
+            emit changed();
+            return;
+        }
         m_devices.pair(id, theirs.value("name").toString(), theirs.value("kind").toString(), now);
         // Joined through the relay in the code: meet there from now on, as
         // the computer joined does.
@@ -447,11 +588,15 @@ void PeerLink::handle(const QJsonObject &event) {
         m_stateDelay.start();
         emit changed();
     } else if (ev == "pair_failed") {
-        const QString message = failure(event.value("reason").toString());
+        const QString message = m_refusal.isEmpty() ? failure(event.value("reason").toString()) : m_refusal;
+        m_refusal.clear();
         m_pairCode.clear();
+        m_shareList.clear();
+        m_shareUniverse.clear();
         m_pairExpiry.stop();
         m_joinCode.clear();
         m_joinRelay.clear();
+        m_joinUniverse = false;
         emit failed(message);
         returnRelay();
     }
@@ -462,7 +607,8 @@ void PeerLink::sendHello(const QString &peer) { send(peer, {{"t", "hello"}, {"de
 void PeerLink::handleMessage(const QString &peer, const QJsonObject &message) {
     const QString type = message.value("t").toString();
     if (type == "hello") {
-        if (!m_devices.merge(message.value("devices").toObject()))
+        // Only your own computers say who's trusted.
+        if (!own(peer) || !m_devices.merge(message.value("devices").toObject()))
             return;
         saveDevices();
         applyTrust();
@@ -481,9 +627,17 @@ void PeerLink::handleMessage(const QString &peer, const QJsonObject &message) {
         emit changed();
     } else if (type == "offer") {
         handleOffer(peer, message.value("lists").toArray());
+    } else if (type == "members") {
+        const QString list = message.value("list").toString();
+        if (!own(peer) && !m_members.allowed(list, peer))
+            return;
+        if (!m_members.merge(list, message.value("members").toObject()))
+            return;
+        saveMembers();
+        membersChanged();
     } else if (type == "get") {
         List *list = listById(message.value("list").toString());
-        if (!list)
+        if (!allowed(peer, list))
             return;
         for (const auto &value : message.value("machines").toArray()) {
             const QString machine = value.toString();
@@ -503,7 +657,7 @@ void PeerLink::handleMessage(const QString &peer, const QJsonObject &message) {
 void PeerLink::sendOffer(const QString &peer) {
     QJsonArray lists;
     for (const auto &list : m_lists) {
-        if (list->id.isEmpty())
+        if (!allowed(peer, list.get()))
             continue;
         Store ignored;
         list->sync->read(&ignored, nullptr);
@@ -565,9 +719,11 @@ PeerLink::List *PeerLink::mine() {
 // The same list as one offered: by its id, or, for a folder whose machines
 // made up ids of their own before hearing of each other, by a machine they
 // have in common.
-PeerLink::List *PeerLink::match(const QJsonObject &offered) {
+PeerLink::List *PeerLink::match(const QJsonObject &offered, bool fromOwn) {
     if (List *found = listById(offered.value("id").toString()))
         return found;
+    if (!fromOwn)
+        return nullptr;
     const QJsonObject files = offered.value("files").toObject();
     const bool isMine = offered.value("mine").toBool();
     for (auto &list : m_lists) {
@@ -583,6 +739,8 @@ PeerLink::List *PeerLink::match(const QJsonObject &offered) {
 
 void PeerLink::handleOffer(const QString &peer, const QJsonArray &lists) {
     const bool joining = peer == m_joinFrom;
+    const bool fromOwn = own(peer);
+    bool created = false, joinedAll = false;
     for (const auto &value : lists) {
         const QJsonObject offered = value.toObject();
         const QString id = offered.value("id").toString();
@@ -592,7 +750,7 @@ void PeerLink::handleOffer(const QString &peer, const QJsonArray &lists) {
 
         if (joining && offered.value("mine").toBool() && !m_staging) {
             List *own = mine();
-            if (own && (own->id == id || match(offered) == own)) {
+            if (own && (own->id == id || match(offered, true) == own)) {
                 finishJoin();
                 continue;
             }
@@ -616,17 +774,23 @@ void PeerLink::handleOffer(const QString &peer, const QJsonArray &lists) {
         if (m_staging && m_staging->list == id)
             continue;
 
-        List *local = match(offered);
+        // Someone you share with offers only what they share with you.
+        if (!fromOwn && offered.value("mine").toBool())
+            continue;
+        List *local = match(offered, fromOwn);
         if (!local) {
-            if (offered.value("mine").toBool() || Universes(m_usual).hidden().contains(id))
+            if (!fromOwn || offered.value("mine").toBool() || Universes(m_usual).hidden().contains(id))
                 continue;
             if (createUniverse(offered).isEmpty())
                 continue;
             loadLists();
+            created = true;
             local = listById(id);
             if (!local)
                 continue;
         }
+        if (!allowed(peer, local))
+            continue;
         Store ignored;
         local->sync->read(&ignored, nullptr);
         const auto known = local->sync->files();
@@ -645,7 +809,19 @@ void PeerLink::handleOffer(const QString &peer, const QJsonArray &lists) {
             m_aliases[id] = local->id;
         if (!wanted.isEmpty())
             send(peer, {{"t", "get"}, {"list", id}, {"machines", wanted}});
+        if (m_shareJoin && !m_shareJoin->offered && m_shareJoin->peer == peer && m_shareJoin->list == local->id) {
+            m_shareJoin->offered = true;
+            for (const auto &w : wanted)
+                m_shareJoin->waiting.insert(w.toString());
+            joinedAll = m_shareJoin->waiting.isEmpty();
+        }
     }
+    // A universe that came from your computers, shared with others: this
+    // computer is in it now too.
+    if (created && addSelf())
+        membersChanged();
+    if (joinedAll)
+        finishShareJoin();
 }
 
 QString PeerLink::createUniverse(const QJsonObject &offered) {
@@ -674,15 +850,25 @@ void PeerLink::storeFile(const QString &peer, const QJsonObject &message) {
     if (!MachineId.match(machine).hasMatch())
         return;
     const bool staged = m_staging && m_staging->list == listId;
-    QString folder, own;
+    QString folder, own, local;
     if (staged) {
+        if (peer != m_staging->peer)
+            return;
         folder = m_staging->folder;
     } else if (List *list = listById(listId) ? listById(listId) : listById(m_aliases.value(listId))) {
+        if (!allowed(peer, list))
+            return;
         folder = list->folder;
         own = list->machine;
+        local = list->id;
     } else {
         return;
     }
+    auto arrived = [this, &local, &machine] {
+        if (m_shareJoin && m_shareJoin->offered && m_shareJoin->list == local && m_shareJoin->waiting.remove(machine) &&
+            m_shareJoin->waiting.isEmpty())
+            finishShareJoin();
+    };
     // Only this machine writes its own file.
     if (machine == own)
         return;
@@ -695,6 +881,7 @@ void PeerLink::storeFile(const QString &peer, const QJsonObject &message) {
     if (!existing.isEmpty() && !SyncFolder::describe(document.object()).newerThan(SyncFolder::describe(existing))) {
         if (staged && m_staging->waiting.remove(machine) && m_staging->waiting.isEmpty())
             finishJoin();
+        arrived();
         return;
     }
     if (!saveBytes(path, bytes))
@@ -702,6 +889,7 @@ void PeerLink::storeFile(const QString &peer, const QJsonObject &message) {
     emit received(listId, machine, peer);
     if (staged && m_staging->waiting.remove(machine) && m_staging->waiting.isEmpty())
         finishJoin();
+    arrived();
 }
 
 void PeerLink::finishJoin() {
@@ -749,6 +937,164 @@ void PeerLink::finishJoin() {
     }
     send(from, {{"t", "joined"}});
     emit joined(result);
+}
+
+// Sharing a universe, from either end, once the code has done its work. The
+// host adds the joiner to the universe; the joiner makes a universe for it
+// beside its own list and waits for its files.
+void PeerLink::pairedShare(const QString &id, const QJsonObject &theirs, const QStringList &addresses) {
+    const QDateTime now = QDateTime::currentDateTime();
+    const QString theirName = theirs.value("name").toString();
+    const QString self = m_devices.id();
+    if (!addresses.isEmpty())
+        m_addrs[id] = addresses;
+    if (m_joinCode.isEmpty()) {
+        const QString list = m_shareList;
+        m_pairCode.clear();
+        m_pairExpiry.stop();
+        m_shareList.clear();
+        m_shareUniverse.clear();
+        // An older Needful takes any code as pairing a computer; it would
+        // trust this one with everything, so it gets nothing.
+        if (theirs.value("joining").toString() != "universe") {
+            emit failed(QString("\"%1\" has a Needful too old to join a shared universe, so nothing was shared. "
+                                "Update Needful there, then share again.")
+                            .arg(theirName));
+            return;
+        }
+        if (!m_members.allowed(list, self))
+            m_members.add(list, self, name(), {}, now);
+        m_members.add(list, id, theirName, {}, now);
+        saveMembers();
+        membersChanged();
+        emit paired(theirName, Devices::fingerprintOf(id));
+        dial(id, addresses);
+        return;
+    }
+
+    const QJsonObject shared = theirs.value("share").toObject();
+    const QString list = shared.value("id").toString();
+    QString universe;
+    bool already = false;
+    if (List *have = listById(list)) {
+        universe = have->universe;
+        already = true;
+    } else {
+        universe = createUniverse(QJsonObject{{"name", shared.value("name")}, {"id", list}});
+    }
+    if (universe.isEmpty() || list.isEmpty()) {
+        m_joinCode.clear();
+        m_joinUniverse = false;
+        m_joinRelay.clear();
+        emit failed("Could not make a universe here to join it in.");
+        returnRelay();
+        return;
+    }
+    m_members.add(list, id, theirName, {}, now);
+    if (!m_members.allowed(list, self))
+        m_members.add(list, self, name(), {}, now);
+    saveMembers();
+    loadLists();
+    m_joinCode.clear();
+    m_joinUniverse = false;
+    m_joinRelay.clear();
+    m_joinInfo = theirs;
+    m_shareJoin = std::make_unique<ShareJoin>();
+    m_shareJoin->peer = id;
+    m_shareJoin->list = list;
+    m_shareJoin->universe = universe;
+    m_shareJoin->already = already;
+    m_shareJoinWait.start();
+    membersChanged();
+    // Back on this computer's own relay, it dials everyone once ready.
+    if (!returnRelay())
+        dial(id, addresses);
+}
+
+void PeerLink::finishShareJoin() {
+    if (!m_shareJoin)
+        return;
+    m_shareJoinWait.stop();
+    const std::unique_ptr<ShareJoin> done = std::move(m_shareJoin);
+    int tasks = 0;
+    if (List *list = listById(done->list)) {
+        Store store;
+        if (list->sync->read(&store, nullptr))
+            tasks = int(store.tasks.size());
+    }
+    emit joined({{"name", m_joinInfo.value("name").toString()},
+                 {"fingerprint", Devices::fingerprintOf(done->peer)},
+                 {"universe", done->universe},
+                 {"shared", true},
+                 {"already", done->already},
+                 {"tasks", tasks},
+                 {"this", name()}});
+}
+
+void PeerLink::sendMembers(const QString &peer) {
+    const bool mineToo = own(peer);
+    for (const QString &list : m_members.lists())
+        if (mineToo || m_members.allowed(list, peer))
+            send(peer, {{"t", "members"}, {"list", list}, {"members", m_members.entry(list)}});
+}
+
+// Someone was added to a universe or removed from it, here or anywhere in it.
+void PeerLink::membersChanged() {
+    addSelf();
+    applyTrust();
+    for (auto it = m_up.cbegin(); it != m_up.cend(); ++it) {
+        sendMembers(it.key());
+        sendOffer(it.key());
+    }
+    dialAll();
+    emit changed();
+}
+
+// A computer holding a shared universe is in it, so the others in it can
+// reach it: added once, with the computer of yours it came through, and
+// never again after it's been removed.
+bool PeerLink::addSelf() {
+    const QString self = m_devices.id();
+    if (self.isEmpty())
+        return false;
+    bool added = false;
+    for (const auto &list : m_lists) {
+        if (list->mine || list->id.isEmpty() || !m_members.shared(list->id) || m_members.member(list->id, self))
+            continue;
+        QString via;
+        for (const Members::Member &m : m_members.members(list->id))
+            if (own(m.id)) {
+                via = m_members.root(list->id, m.id);
+                break;
+            }
+        if (via == self)
+            via.clear();
+        m_members.add(list->id, self, name(), via, QDateTime::currentDateTime());
+        added = true;
+    }
+    if (added)
+        saveMembers();
+    return added;
+}
+
+void PeerLink::saveMembers() {
+    Members disk(m_dir);
+    if (disk.load(m_devices.id()))
+        m_members.mergeAll(disk);
+    m_members.save(nullptr);
+    m_membersWritten = contents(m_members.path());
+}
+
+void PeerLink::reloadMembers() {
+    const QByteArray now = contents(m_members.path());
+    if (now == m_membersWritten)
+        return;
+    // Changed from the command line: someone removed from a universe.
+    m_membersWritten = now;
+    saveMembers();
+    if (!m_link && !m_members.trustedIds().isEmpty())
+        startLink(nullptr);
+    membersChanged();
 }
 
 // Every list is a sync folder once this computer has someone to share it
@@ -801,7 +1147,8 @@ void PeerLink::loadLists() {
         if (!list->sync->read(&ignored, nullptr))
             continue;
         // Written once, and only for a computer that shares its lists.
-        if ((!m_devices.paired().isEmpty() || !m_pairCode.isEmpty() || !m_joinCode.isEmpty()) &&
+        if ((!m_devices.paired().isEmpty() || !m_pairCode.isEmpty() || !m_joinCode.isEmpty() ||
+             !m_shareUniverse.isEmpty() || m_members.shared(list->sync->listId())) &&
             (list->sync->listId().isEmpty() || !list->sync->files().contains(list->machine) ||
              list->sync->files().value(list->machine).device != m_devices.id())) {
             list->sync->ensureListId(nullptr);
@@ -887,7 +1234,8 @@ void PeerLink::loadState() {
     }
 }
 
-// A line of JSON each way: {"op": "pair"}, {"op": "join", "code", "at"},
+// A line of JSON each way: {"op": "pair"}, {"op": "share", "universe"},
+// {"op": "join", "code", "at", "universe" (true to join a shared one)},
 // {"op": "answer", "accept"}, {"op": "cancel"}; events come back as
 // {"ev": "code" | "paired" | "confirm" | "joined" | "failed", ...}.
 void PeerLink::serveClient(QLocalSocket *socket) {
@@ -903,8 +1251,8 @@ void PeerLink::serveClient(QLocalSocket *socket) {
         connect(this, &PeerLink::paired, socket, [reply](const QString &name, const QString &fp) {
             reply({{"ev", "paired"}, {"name", name}, {"fingerprint", fp}});
         });
-        connect(this, &PeerLink::confirm, socket, [reply](const QString &name, const QString &fp) {
-            reply({{"ev", "confirm"}, {"name", name}, {"fingerprint", fp}});
+        connect(this, &PeerLink::confirm, socket, [reply](const QString &name, const QString &fp, const QString &universe) {
+            reply({{"ev", "confirm"}, {"name", name}, {"fingerprint", fp}, {"universe", universe}});
         });
         connect(this, &PeerLink::joined, socket, [reply](const QVariantMap &result) {
             QJsonObject message = QJsonObject::fromVariantMap(result);
@@ -928,9 +1276,14 @@ void PeerLink::serveClient(QLocalSocket *socket) {
                 hook();
                 *pairing = true;
                 pair();
+            } else if (op == "share") {
+                hook();
+                *pairing = true;
+                share(request.value("universe").toString());
             } else if (op == "join") {
                 hook();
-                join(request.value("code").toString(), request.value("at").toString());
+                join(request.value("code").toString(), request.value("at").toString(),
+                     request.value("universe").toBool());
             } else if (op == "answer") {
                 answer(request.value("accept").toBool());
             } else if (op == "cancel") {
@@ -973,6 +1326,99 @@ PeerStatus PeerStatus::read(const QString &appDir, const SyncFolder *list) {
     return status;
 }
 
+QString UniverseMembers::listIdOf(const QString &dataPath) {
+    SyncFolder::Pointer pointer;
+    if (!readPointerAt(dataPath, &pointer))
+        return {};
+    SyncFolder folder(pointer.folder, pointer.machine);
+    Store ignored;
+    return folder.read(&ignored, nullptr) ? folder.listId() : QString();
+}
+
+UniverseMembers UniverseMembers::read(const QString &usualDataPath, const QString &universe) {
+    UniverseMembers result;
+    const QString appDir = PeerLink::appDirFor(usualDataPath);
+    Devices devices(appDir);
+    devices.load(nullptr, false);
+    Members members(appDir);
+    members.load(devices.id());
+    result.list = listIdOf(Universes(usualDataPath).dataPath(universe));
+    result.yours.append(devices.name().isEmpty() ? hostName() : devices.name());
+    for (const auto &d : devices.paired())
+        if (d.kind == "computer")
+            result.yours.append(d.name);
+    {
+        QLockFile lock(appDir + "/link.lock");
+        lock.setStaleLockTime(0);
+        result.running = !lock.tryLock(0);
+        if (!result.running)
+            lock.unlock();
+    }
+    const QJsonObject state = parse(contents(appDir + "/link-state.json")).value("devices").toObject();
+    const QStringList own = devices.trustedIds();
+    for (const auto &m : members.members(result.list)) {
+        if (m.id == devices.id() || own.contains(m.id))
+            continue;
+        const QJsonObject s = state.value(m.id).toObject();
+        Entry e{m, result.running ? s.value("link").toString() : QString(),
+                QDateTime::fromString(s.value("seen").toString(), Qt::ISODateWithMs), {}};
+        if (!m.via.isEmpty() && m.via != devices.id() && !own.contains(m.via))
+            if (const auto through = members.member(result.list, m.via))
+                e.via = through->name;
+        result.others.append(e);
+    }
+    return result;
+}
+
+QStringList UniverseMembers::remove(const QString &usualDataPath, const QString &universe, const QString &who,
+                                    QString *error) {
+    auto fail = [error](const QString &message) {
+        if (error) *error = message;
+        return QStringList();
+    };
+    if (Universes(usualDataPath).dataPath(universe).isEmpty())
+        return fail(QString("No universe named %1. See: needful universe").arg(universe));
+    const QString appDir = PeerLink::appDirFor(usualDataPath);
+    Devices devices(appDir);
+    devices.load(nullptr, false);
+    Members members(appDir);
+    QString problem;
+    if (!members.load(devices.id(), &problem))
+        return fail(problem);
+    const QString list = listIdOf(Universes(usualDataPath).dataPath(universe));
+    // Someone else in it first, then your own computers, which can share a name.
+    std::optional<Members::Member> found;
+    for (const auto &m : members.members(list))
+        if (m.id != devices.id() && !devices.trustedIds().contains(m.id) &&
+            (m.name.compare(who.trimmed(), Qt::CaseInsensitive) == 0 ||
+             (QString(who).remove('-').trimmed().size() >= 4 && m.id.startsWith(QString(who).remove('-').trimmed().toLower())))) {
+            found = m;
+            break;
+        }
+    const auto mine = devices.find(who);
+    if (!found && ((mine && mine->paired) || who.compare(devices.name(), Qt::CaseInsensitive) == 0))
+        return fail(QString("%1 is one of your computers, which have every universe. To stop trusting it, use: "
+                            "needful sync unpair %1").arg(who));
+    if (!found)
+        return fail(QString("No one named %1 is in %2. See: needful universe members %2").arg(who, universe));
+    // A member's own computers have all of its lists; it's that member to remove.
+    if (!found->via.isEmpty() && members.allowed(list, found->via) && found->via != devices.id() &&
+        !devices.trustedIds().contains(found->via)) {
+        const QString through = members.member(list, found->via)->name;
+        return fail(QString("%1 gets %2 through %3, as one of its computers. Remove %3 to stop sharing it with both.")
+                        .arg(found->name, universe, through));
+    }
+    QStringList names;
+    for (const QString &id : members.remove(list, found->id, QDateTime::currentDateTime()))
+        names.append(members.member(list, id)->name);
+    // The one asked for first.
+    names.removeAll(found->name);
+    names.prepend(found->name);
+    if (!members.save(&problem))
+        return fail(problem);
+    return names;
+}
+
 LinkClient::LinkClient(const QString &appDir, QObject *parent) : QObject(parent), m_dir(appDir) {
     connect(&m_socket, &QLocalSocket::readyRead, this, [this] {
         while (m_socket.canReadLine()) {
@@ -985,7 +1431,8 @@ LinkClient::LinkClient(const QString &appDir, QObject *parent) : QObject(parent)
             else if (ev == "paired")
                 emit paired(event.value("name").toString(), event.value("fingerprint").toString());
             else if (ev == "confirm")
-                emit confirm(event.value("name").toString(), event.value("fingerprint").toString());
+                emit confirm(event.value("name").toString(), event.value("fingerprint").toString(),
+                             event.value("universe").toString());
             else if (ev == "joined")
                 emit joined(event.toVariantMap());
             else if (ev == "failed")
@@ -1009,7 +1456,10 @@ void LinkClient::write(const QJsonObject &message) {
 }
 
 void LinkClient::pair() { write({{"op", "pair"}}); }
-void LinkClient::join(const QString &code, const QString &at) { write({{"op", "join"}, {"code", code}, {"at", at}}); }
+void LinkClient::share(const QString &universe) { write({{"op", "share"}, {"universe", universe}}); }
+void LinkClient::join(const QString &code, const QString &at, bool universe) {
+    write({{"op", "join"}, {"code", code}, {"at", at}, {"universe", universe}});
+}
 void LinkClient::answer(bool accept) { write({{"op", "answer"}, {"accept", accept}}); }
 void LinkClient::cancel() { write({{"op", "cancel"}}); }
 

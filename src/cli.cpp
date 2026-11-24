@@ -857,21 +857,32 @@ struct Holder {
 
 // Prints what pairing says, and ends the loop on a failure, or when paired
 // unless onPaired says to wait longer.
-template <typename Source> void wire(Source *source, QEventLoop *loop, int *code, std::function<void()> onPaired = {}) {
+template <typename Source>
+void wire(Source *source, QEventLoop *loop, int *code, std::function<void()> onPaired = {}, const QString &universe = {}) {
     QObject::connect(source, &Source::failed, loop, [loop, code](const QString &message) {
         print(stderr, message);
         *code = 1;
         loop->quit();
     });
-    QObject::connect(source, &Source::pairCode, loop, [](const QString &pairCode, const QString &name, const QString &fp) {
-        print(stdout, "Pair code: " + pairCode);
-        print(stdout, QString("This machine: \"%1\"  %2").arg(name, fp));
-        print(stdout, QString::fromUtf8("Waiting for a computer… (the code works once, for a few minutes)"));
-        print(stdout, "On the other computer: needful sync join " + pairCode);
+    QObject::connect(source, &Source::pairCode, loop, [universe](const QString &pairCode, const QString &name, const QString &fp) {
+        if (universe.isEmpty()) {
+            print(stdout, "Pair code: " + pairCode);
+            print(stdout, QString("This machine: \"%1\"  %2").arg(name, fp));
+            print(stdout, QString::fromUtf8("Waiting for a computer… (the code works once, for a few minutes)"));
+            print(stdout, "On the other computer: needful sync join " + pairCode);
+        } else {
+            print(stdout, QString("Share \"%1\" with code %2").arg(universe, pairCode));
+            print(stdout, QString("This machine: \"%1\"  %2").arg(name, fp));
+            print(stdout, QString::fromUtf8("Waiting… (the code works once, for a few minutes)"));
+            print(stdout, "On their computer: needful universe join " + pairCode);
+        }
         fflush(stdout);
     });
-    QObject::connect(source, &Source::paired, loop, [onPaired, loop](const QString &name, const QString &fp) {
-        print(stdout, QString("Paired with \"%1\"  %2").arg(name, fp));
+    QObject::connect(source, &Source::paired, loop, [onPaired, loop, universe](const QString &name, const QString &fp) {
+        if (universe.isEmpty())
+            print(stdout, QString("Paired with \"%1\"  %2").arg(name, fp));
+        else
+            print(stdout, QString("\"%1\" joined \"%2\"  %3").arg(name, universe, fp));
         fflush(stdout);
         if (onPaired)
             onPaired();
@@ -975,6 +986,179 @@ int syncJoin(const QString &usual, const QString &pairCode, const QString &at, b
     QObject::connect(qApp, &QCoreApplication::aboutToQuit, &loop, &QEventLoop::quit);
     loop.exec();
     return code;
+}
+
+int universeShare(const QString &usual, const QString &universe) {
+    if (universe.isEmpty())
+        return fail("Name the universe to share: needful universe share family");
+    if (universe == Universes::Mine)
+        return fail("Your own list is only for your computers; pair one with needful sync pair. Share a universe "
+                    "instead: needful universe add family, then needful universe share family.");
+    if (Universes(usual).dataPath(universe).isEmpty())
+        return fail(QString("No universe named %1. See: needful universe").arg(universe));
+    Holder holder;
+    if (!holder.open(usual))
+        return fail(holder.error);
+    QEventLoop loop;
+    int code = 0;
+    stopOnSignals();
+    if (holder.link) {
+        // Holding the link only for this: stay until they have the universe.
+        PeerLink *link = holder.link.get();
+        wire(link, &loop, &code, [&loop] { QTimer::singleShot(120 * 1000, &loop, &QEventLoop::quit); }, universe);
+        QObject::connect(link, &PeerLink::received, &loop, [&loop, link, universe](const QString &list) {
+            if (list == link->listIdOf(universe))
+                QTimer::singleShot(1500, &loop, &QEventLoop::quit);
+        });
+        QObject::connect(link, &PeerLink::sent, &loop, [&loop, link, universe](const QString &list) {
+            if (list == link->listIdOf(universe))
+                QTimer::singleShot(5000, &loop, &QEventLoop::quit);
+        });
+        link->share(universe);
+    } else {
+        wire(holder.client.get(), &loop, &code, {}, universe);
+        holder.client->share(universe);
+    }
+    QObject::connect(qApp, &QCoreApplication::aboutToQuit, &loop, &QEventLoop::quit);
+    loop.exec();
+    return code;
+}
+
+int universeJoin(const QString &usual, const QString &shareCode, const QString &at, bool yes) {
+    Holder holder;
+    if (!holder.open(usual))
+        return fail(holder.error);
+    QEventLoop loop;
+    int code = 0;
+    stopOnSignals();
+    auto ask = [yes](const QString &name, const QString &fp, const QString &universe) {
+        if (yes)
+            return true;
+        fprintf(stdout, "Join \"%s\" from \"%s\"  %s? [y/N] ", qPrintable(universe), qPrintable(name), qPrintable(fp));
+        fflush(stdout);
+        char line[64] = {0};
+        if (!fgets(line, sizeof line, stdin))
+            return false;
+        const QString answer = QString::fromUtf8(line).trimmed().toLower();
+        return answer == "y" || answer == "yes";
+    };
+    auto onJoined = [](const QVariantMap &result) {
+        const QString universe = result["universe"].toString();
+        const int tasks = result["tasks"].toInt();
+        const QString counted = QString("%1 %2.").arg(count(tasks), tasks == 1 ? "task" : "tasks");
+        if (result["already"].toBool())
+            print(stdout, QString("This computer already has \"%1\". %2").arg(universe, counted));
+        else
+            print(stdout, QString("Joined \"%1\" as a new universe. %2").arg(universe, counted));
+        print(stdout, QString("Open it with: needful open --universe %1, or U in the window.").arg(universe));
+        fflush(stdout);
+    };
+    auto connectAll = [&](auto *source) {
+        using Source = std::remove_pointer_t<decltype(source)>;
+        wire(source, &loop, &code);
+        QObject::connect(source, &Source::confirm, &loop,
+                         [source, ask, &loop, &code](const QString &name, const QString &fp, const QString &universe) {
+                             const bool accept = ask(name, fp, universe);
+                             source->answer(accept);
+                             if (!accept) {
+                                 print(stderr, "Nothing was shared.");
+                                 code = 1;
+                                 QTimer::singleShot(300, &loop, &QEventLoop::quit);
+                             }
+                         });
+    };
+    if (holder.link) {
+        PeerLink *link = holder.link.get();
+        connectAll(link);
+        QObject::connect(link, &PeerLink::joined, &loop, [&loop, onJoined, link](const QVariantMap &result) {
+            onJoined(result);
+            // Stay until the other computer has this one in the universe.
+            const QString universe = result["universe"].toString();
+            QTimer::singleShot(15 * 1000, &loop, &QEventLoop::quit);
+            QObject::connect(link, &PeerLink::sent, &loop, [&loop, link, universe](const QString &list) {
+                if (list == link->listIdOf(universe))
+                    QTimer::singleShot(1500, &loop, &QEventLoop::quit);
+            });
+        });
+        link->join(shareCode, at, true);
+    } else {
+        LinkClient *client = holder.client.get();
+        connectAll(client);
+        QObject::connect(client, &LinkClient::joined, &loop, [&loop, onJoined](const QVariantMap &result) {
+            onJoined(result);
+            loop.quit();
+        });
+        client->join(shareCode, at, true);
+    }
+    QObject::connect(qApp, &QCoreApplication::aboutToQuit, &loop, &QEventLoop::quit);
+    loop.exec();
+    return code;
+}
+
+int universeMembers(const Command &command, const QString &usual, const QString &universe) {
+    if (universe.isEmpty())
+        return fail("Name the universe: needful universe members family");
+    if (Universes(usual).dataPath(universe).isEmpty())
+        return fail(QString("No universe named %1. See: needful universe").arg(universe));
+    const UniverseMembers members = UniverseMembers::read(usual, universe);
+    const Backend backend(usual);
+    auto statusOf = [&](const UniverseMembers::Entry &e) {
+        if (!e.link.isEmpty())
+            return QString("connected");
+        if (!e.via.isEmpty())
+            return "via " + e.via;
+        if (e.seen.isValid())
+            return "last seen " + backend.heardText(e.seen);
+        return QString("not seen yet");
+    };
+    if (command.wantsJson()) {
+        QJsonArray array;
+        for (const auto &e : members.others)
+            array.append(QJsonObject{
+                {"name", e.member.name},
+                {"fingerprint", e.member.fingerprint()},
+                {"link", e.link.isEmpty() ? QJsonValue() : QJsonValue(e.link)},
+                {"lastSeen", e.seen.isValid() ? QJsonValue(e.seen.toString(Qt::ISODateWithMs)) : QJsonValue()},
+                {"via", e.via.isEmpty() ? QJsonValue() : QJsonValue(e.via)}});
+        printJson(QJsonObject{{"universe", universe},
+                              {"yourComputers", QJsonArray::fromStringList(members.yours)},
+                              {"members", array}});
+        return 0;
+    }
+    if (members.others.isEmpty()) {
+        print(stdout, QString("%1 is only on your computers. Share it with: needful universe share %1").arg(universe));
+        return 0;
+    }
+    int width = int(QString("Your computers").size());
+    for (const auto &e : members.others)
+        width = std::max(width, int(e.member.name.size()));
+    print(stdout, universe);
+    print(stdout, "  " + QString("Your computers").leftJustified(width + 3) + members.yours.join(", "));
+    for (const auto &e : members.others)
+        print(stdout, "  " + e.member.name.leftJustified(width + 3) + e.member.fingerprint() + "   " + statusOf(e));
+    if (!members.running)
+        print(stdout, "\nNeedful isn't running here, so nothing is passed along until it is.");
+    return 0;
+}
+
+int universeUnshare(const Command &command, const QString &usual, const QString &universe, const QString &who) {
+    if (universe.isEmpty() || who.isEmpty())
+        return fail("Name the universe and who to remove: needful universe unshare family kid-ipad-mini");
+    QString error;
+    const QStringList gone = UniverseMembers::remove(usual, universe, who, &error);
+    if (gone.isEmpty())
+        return fail(error);
+    if (command.wantsJson()) {
+        printJson(QJsonObject{{"universe", universe}, {"removed", QJsonArray::fromStringList(gone)}});
+        return 0;
+    }
+    const int more = int(gone.size()) - 1;
+    if (more > 0)
+        print(stdout, QString("Removed \"%1\" and %2 %3 that came with it from \"%4\". They keep what they already have.")
+                          .arg(gone.first(), count(more), more == 1 ? "computer" : "computers", universe));
+    else
+        print(stdout, QString("Removed \"%1\" from \"%2\". It keeps what it already has.").arg(gone.first(), universe));
+    return 0;
 }
 
 int syncLinkCommand(const QString &usual) {
@@ -1392,15 +1576,34 @@ int sync(const QStringList &arguments) {
 }
 
 int universe(const QStringList &arguments) {
-    Command command("universe", "List universes, or add or remove one. A universe is a separate list, like "
-                                "someone else's, that you open with --universe or from the window's switcher.");
-    command.parser.addPositionalArgument("action", "add <name> [<folder>], or remove <name>", "[action]");
+    Command command("universe", "List universes, add or remove one, or share one with someone. A universe is a "
+                                "separate list, like someone else's, that you open with --universe or from the "
+                                "window's switcher. Sharing one gives another person's computers that list and "
+                                "nothing else of yours.");
+    command.parser.addPositionalArgument("action", "add <name> [<folder>], remove <name>, share <name>, join <code>, "
+                                                   "members <name>, or unshare <name> <who>", "[action]");
     command.parser.addOption({"name", "With add and a folder: what to call this machine in that universe", "name"});
+    command.parser.addOption({"at", "With join: the other computer's address, when it isn't on this network", "host"});
+    command.parser.addOption({"yes", "With join: join without asking"});
     command.json();
     command.parser.process(arguments);
     const QString action = command.argument(1), name = command.argument(2).trimmed().toLower();
     Universes universes;
     QString error;
+    // Sharing is for the whole install, as pairing is.
+    const QString usual = command.parser.isSet("data") ? command.parser.value("data") : Backend::defaultDataPath();
+    if (action == "share")
+        return universeShare(usual, name);
+    if (action == "join") {
+        if (command.argument(2).isEmpty())
+            return fail("Type the code the other computer shows: needful universe join 4-amber-lantern-quiet");
+        return universeJoin(usual, command.parser.positionalArguments().mid(2).join('-'), command.parser.value("at"),
+                            command.parser.isSet("yes"));
+    }
+    if (action == "members")
+        return universeMembers(command, usual, name);
+    if (action == "unshare")
+        return universeUnshare(command, usual, name, command.parser.positionalArguments().mid(3).join(' ').trimmed());
 
     if (action == "add") {
         if (name.isEmpty())
@@ -1447,7 +1650,8 @@ int universe(const QStringList &arguments) {
         return 0;
     }
     if (!action.isEmpty())
-        return fail("Use needful universe, universe add <name> [<folder>], or universe remove <name>.");
+        return fail("Use needful universe, universe add <name> [<folder>], universe remove <name>, universe share "
+                    "<name>, universe join <code>, universe members <name>, or universe unshare <name> <who>.");
 
     QJsonArray array;
     int width = 4;
@@ -1502,6 +1706,10 @@ QString cliSummary() {
            "  universe                         List universes: yours, and others you can open\n"
            "  universe add <name> [<folder>]   Add one, like someone else's, syncing through its folder\n"
            "  universe remove <name>           Stop listing it on this computer\n"
+           "  universe share <name>            Show a code for someone to join that one universe with\n"
+           "  universe join <code> [--at host] Join a universe someone shared, beside your own list\n"
+           "  universe members <name>          Who it's shared with, and whether they're connected\n"
+           "  universe unshare <name> <who>    Stop sharing it with them; they keep what they have\n"
            "  --universe <name>                Any command, or open, on that universe\n\n"
            "Your other computers (needful help sync):\n"
            "  sync pair                        Show a code for another computer to join with\n"

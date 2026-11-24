@@ -2,6 +2,7 @@
 
 #include <QDateTime>
 #include <QFile>
+#include <QLocale>
 
 #include "devices.h"
 #include "peers.h"
@@ -21,6 +22,8 @@ PeerPanel::~PeerPanel() = default;
 
 bool PeerPanel::useLink() { return m_link && m_link->holding(); }
 
+QString PeerPanel::usual() const { return m_link ? m_link->usualDataPath() : QString(); }
+
 template <typename Source> void PeerPanel::wire(Source *source) {
     connect(source, &Source::pairCode, this, [this](const QString &code, const QString &name, const QString &fp) {
         m_code = code;
@@ -34,15 +37,29 @@ template <typename Source> void PeerPanel::wire(Source *source) {
         m_otherName = name;
         m_otherFingerprint = fp;
         loadDevices();
-        set("done", tr("Paired with \"%1\". It's joining this computer's list.").arg(name));
+        if (!m_universe.isEmpty())
+            set("done", tr("“%1” joined “%2”.").arg(name, m_universe));
+        else
+            set("done", tr("Paired with \"%1\". It's joining this computer's list.").arg(name));
     });
-    connect(source, &Source::confirm, this, [this](const QString &name, const QString &fp) {
+    connect(source, &Source::confirm, this, [this](const QString &name, const QString &fp, const QString &universe) {
         m_otherName = name;
         m_otherFingerprint = fp;
+        m_universe = universe;
         set("confirm");
     });
     connect(source, &Source::joined, this, [this](const QVariantMap &result) {
         loadDevices();
+        if (result["shared"].toBool()) {
+            const QString universe = result["universe"].toString();
+            const int tasks = result["tasks"].toInt();
+            m_universe = universe;
+            set("done", (result["already"].toBool() ? tr("This computer already has “%1”.").arg(universe)
+                                                     : tr("Joined “%1” as a new universe.").arg(universe)) +
+                            " " + tr("%n tasks.", "", tasks));
+            emit joinedUniverse(universe);
+            return;
+        }
         const int tasks = result["tasks"].toInt();
         const QString merged = result["already"].toBool() ? tr("This computer already had its list.")
                                : tasks ? tr("Joined its list. Merged %n tasks that were only here.", "", tasks)
@@ -62,37 +79,80 @@ void PeerPanel::set(const QString &state, const QString &message) {
     emit changed();
 }
 
+bool PeerPanel::connectClient() {
+    m_client = std::make_unique<LinkClient>(m_dir);
+    wire(m_client.get());
+    if (m_client->connectToOwner())
+        return true;
+    set("failed", tr("Another Needful here holds the link but isn't answering. Close it and try again."));
+    return false;
+}
+
 void PeerPanel::pair() {
     m_code.clear();
     m_otherName.clear();
+    m_universe.clear();
     set("waiting");
-    if (useLink()) {
+    if (useLink())
         m_link->pair();
-        return;
-    }
-    m_client = std::make_unique<LinkClient>(m_dir);
-    wire(m_client.get());
-    if (!m_client->connectToOwner()) {
-        set("failed", tr("Another Needful here holds the link but isn't answering. Close it and try again."));
-        return;
-    }
-    m_client->pair();
+    else if (connectClient())
+        m_client->pair();
 }
 
 void PeerPanel::join(const QString &code, const QString &at) {
     m_otherName.clear();
+    m_universe.clear();
     set("joining");
-    if (useLink()) {
+    if (useLink())
         m_link->join(code, at);
-        return;
+    else if (connectClient())
+        m_client->join(code, at);
+}
+
+void PeerPanel::share(const QString &universe) {
+    m_code.clear();
+    m_otherName.clear();
+    m_universe = universe;
+    set("waiting");
+    if (useLink())
+        m_link->share(universe);
+    else if (connectClient())
+        m_client->share(universe);
+}
+
+void PeerPanel::joinUniverse(const QString &code, const QString &at) {
+    m_otherName.clear();
+    m_universe.clear();
+    set("joining");
+    if (useLink())
+        m_link->join(code, at, true);
+    else if (connectClient())
+        m_client->join(code, at, true);
+}
+
+QVariantMap PeerPanel::members(const QString &universe) const {
+    const UniverseMembers read = UniverseMembers::read(usual(), universe);
+    QVariantList others;
+    for (const auto &e : read.others) {
+        const QString status = !e.link.isEmpty() ? tr("connected")
+                               : !e.via.isEmpty() ? tr("via %1").arg(e.via)
+                               : e.seen.isValid()
+                                   ? tr("last seen %1").arg(QLocale().toString(e.seen.toLocalTime().date(), QLocale::ShortFormat))
+                                   : tr("not seen yet");
+        others.append(QVariantMap{{"id", e.member.id},
+                                  {"name", e.member.name},
+                                  {"fingerprint", e.member.fingerprint()},
+                                  {"status", status},
+                                  {"removable", e.via.isEmpty()}});
     }
-    m_client = std::make_unique<LinkClient>(m_dir);
-    wire(m_client.get());
-    if (!m_client->connectToOwner()) {
-        set("failed", tr("Another Needful here holds the link but isn't answering. Close it and try again."));
-        return;
-    }
-    m_client->join(code, at);
+    return {{"yours", read.yours.join(", ")}, {"others", others}};
+}
+
+QString PeerPanel::unshare(const QString &universe, const QString &id) {
+    QString error;
+    if (UniverseMembers::remove(usual(), universe, id, &error).isEmpty())
+        return error;
+    return {};
 }
 
 void PeerPanel::answer(bool accept) {
@@ -116,6 +176,7 @@ void PeerPanel::cancel() {
         answer(false);
     }
     m_client.reset();
+    m_universe.clear();
     set("", {});
 }
 

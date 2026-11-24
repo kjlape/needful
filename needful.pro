@@ -3,13 +3,14 @@ QT += core gui qml quick quickcontrols2 network
 CONFIG += c++17 release
 TARGET = needful
 TEMPLATE = app
-VERSION = 0.13.1
+VERSION = 0.14.0
 DEFINES += APP_VERSION=\\\"$$VERSION\\\"
 
 HEADERS += \
     src/backend.h \
     src/cli.h \
     src/devices.h \
+    src/members.h \
     src/link.h \
     src/peerpanel.h \
     src/peers.h \
@@ -27,6 +28,7 @@ SOURCES += \
     src/backend.cpp \
     src/cli.cpp \
     src/devices.cpp \
+    src/members.cpp \
     src/peerpanel.cpp \
     src/peers.cpp \
     src/httpserver.cpp \

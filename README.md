@@ -277,6 +277,55 @@ this computer joins it as one more machine. Your paired computers also keep
 every universe in step among themselves. There are no permissions inside
 a universe: anyone who has joined it can change anything in it.
 
+### Sharing one universe with someone
+
+Pairing a computer makes it one of yours: it gets your own list and every
+universe. To share just one universe with someone else, a family list with
+your spouse's laptop or a client's list with their computer, share it by
+code instead:
+
+```
+$ needful universe share family
+Share "family" with code 4-amber-lantern-quiet
+This machine: "desktop"  4F2A-91C0-7B3E
+Waiting… (the code works once, for a few minutes)
+"wife-laptop" joined "family"  C81D-0A47-E2F9
+```
+
+On their computer:
+
+```
+$ needful universe join 4-amber-lantern-quiet
+Join "family" from "desktop"  4F2A-91C0-7B3E? [y/N] y
+Joined "family" as a new universe. 12 tasks.
+```
+
+The same fingerprint check as pairing, and the same rules: a code that's
+mistyped, used, or expired shares nothing.
+
+They get that universe beside their own list, named as it is here (or
+family-2 if they already have a family), and nothing else: not your own
+list, not your other universes, and not who else you've paired or shared
+with. Their own list stays theirs too. Your other computers pick up the new
+member and can sync the universe with them directly, and so do theirs: a
+member's own computers get the universe through it, the way they get any of
+its universes.
+
+```sh
+needful universe members family              # your computers, then everyone else in it
+needful universe unshare family kid-ipad-mini   # it stops getting changes; it keeps what it has
+```
+
+Anyone in a universe can share it further or remove people from it, and a
+removal reaches everyone in it the way changes do. Removing someone can't
+take back what they already have. In the window, right-click a universe for
+Share… and People…, and join one from the sidebar's ⋯ menu (Join a shared
+universe…).
+
+Upgrade all your own computers before you share: an older Needful doesn't
+know about people you share with, so it can't sync with them, though it never
+gives them anything either.
+
 ## On your phone
 
 `needful serve` runs a small web version for the phone: Today, Needful,

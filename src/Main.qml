@@ -38,7 +38,7 @@ ApplicationWindow {
     // Single-key shortcuts stand down while a dialog is open.
     readonly property bool dialogOpen: helpVisible || editor.visible || completeDialog.visible
                                        || snoozeDialog.visible || contextDialog.visible || confirm.visible
-                                       || logDialog.visible || pairDialog.visible || universeDialog.visible
+                                       || logDialog.visible || pairDialog.visible || universeDialog.visible || peopleDialog.visible
 
     readonly property var views: [
         { key: "today", label: qsTr("Today") },
@@ -192,7 +192,10 @@ ApplicationWindow {
             onAddContext: parent => contextDialog.openForNew(parent)
             onRenameContext: c => contextDialog.openForRename(c)
             onPairComputer: pairDialog.openPair()
-            onJoinComputer: pairDialog.openJoin()
+            onJoinComputer: pairDialog.openJoin("join")
+            onJoinUniverse: pairDialog.openJoin("joinUniverse")
+            onShareUniverse: u => pairDialog.openShare(u)
+            onUniversePeople: u => peopleDialog.openFor(u)
             onAddUniverse: universeDialog.openForNew()
             onRemoveUniverse: u => confirm.ask(
                 qsTr("Stop listing “%1” on this computer? Its data stays, and your paired computers keep it.").arg(u.label),
@@ -514,6 +517,18 @@ ApplicationWindow {
     CompleteDialog { id: completeDialog }
     LogDialog { id: logDialog }
     PairDialog { id: pairDialog }
+    PeopleDialog {
+        id: peopleDialog
+        onShareAsked: pairDialog.openShare({ name: peopleDialog.universe, label: peopleDialog.label })
+        onRemoveAsked: m => confirm.ask(
+            qsTr("Remove “%1” from “%2”? It stops getting changes, and keeps what it already has.").arg(m.name).arg(peopleDialog.label),
+            qsTr("Remove"), () => peopleDialog.remove(m))
+    }
+    // A universe joined from the window opens, as one just added does.
+    Connections {
+        target: peers
+        function onJoinedUniverse(name) { backend.openUniverse(name) }
+    }
     SnoozeDialog { id: snoozeDialog }
     ContextDialog { id: contextDialog }
     UniverseDialog { id: universeDialog }

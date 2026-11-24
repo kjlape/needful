@@ -22,6 +22,7 @@
 #include "universes.h"
 #include "cli.h"
 #include "devices.h"
+#include "members.h"
 #include "peers.h"
 #include "webapi.h"
 
@@ -2335,6 +2336,241 @@ private slots:
                 return backend.store().tasks.size() == 2;
             }(),
             15000);
+    }
+
+    // A universe shared with someone else's computer: they get that one
+    // universe, and nothing else of yours; your other computers and theirs
+    // come along; and removing them stops what comes after.
+    void sharedUniverseGoesOnlyToItsMembers()
+    {
+        QTemporaryDir dir;
+        PeerLink::Options options;
+        options.port = 0;
+        options.mdns = false;
+        options.loopback = true;
+        options.ipc = false;
+        const QString desktopData = dir.filePath("desktop/needful.json"), laptopData = dir.filePath("laptop/needful.json"),
+                      wifeData = dir.filePath("wife/needful.json"), wife2Data = dir.filePath("wife2/needful.json");
+        QString error;
+        {
+            Backend b(desktopData);
+            b.saveTask({{"title", "My own thing"}});
+            Backend w(wifeData);
+            w.saveTask({{"title", "Her own thing"}});
+        }
+        const QString family = Universes(desktopData).add("family", &error);
+        const QString client = Universes(desktopData).add("client", &error);
+        {
+            Backend f(family);
+            f.saveTask({{"title", "Take out the bins"}});
+            f.saveTask({{"title", "Feed the cat"}});
+            Backend c(client);
+            c.saveTask({{"title", "Send the invoice"}});
+        }
+        // She already has a universe called family, from a folder of her own.
+        Universes(wifeData).add("family", &error);
+
+        PeerLink desktop(desktopData, options), laptop(laptopData, options), wife(wifeData, options),
+            wife2(wife2Data, options);
+        QVERIFY(desktop.start(&error) && laptop.start(&error) && wife.start(&error) && wife2.start(&error));
+        auto at = [](const PeerLink &link) { return QString("127.0.0.1:%1").arg(link.port()); };
+        auto pairUp = [&](PeerLink &host, PeerLink &guest) {
+            QSignalSpy code(&host, &PeerLink::pairCode), confirm(&guest, &PeerLink::confirm),
+                joined(&guest, &PeerLink::joined);
+            host.pair();
+            QTRY_VERIFY(host.port() > 0);
+            guest.join(code.first().at(0).toString(), at(host));
+            QTRY_COMPARE_WITH_TIMEOUT(confirm.size(), 1, 15000);
+            guest.answer(true);
+            QTRY_COMPARE_WITH_TIMEOUT(joined.size(), 1, 15000);
+        };
+        pairUp(desktop, laptop);
+        if (QTest::currentTestFailed())
+            return;
+        pairUp(wife, wife2);
+        if (QTest::currentTestFailed())
+            return;
+        auto titles = [](const QString &data) {
+            QStringList list;
+            const Backend backend(data);
+            for (const Task &t : backend.store().tasks)
+                list.append(t.title);
+            list.sort();
+            return list;
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(!Universes(laptopData).dataPath("family").isEmpty(), 15000);
+
+        QSignalSpy code(&desktop, &PeerLink::pairCode), shared(&desktop, &PeerLink::paired),
+            desktopFailed(&desktop, &PeerLink::failed);
+        QSignalSpy confirm(&wife, &PeerLink::confirm), joined(&wife, &PeerLink::joined), wifeFailed(&wife, &PeerLink::failed);
+        desktop.share("family");
+        QCOMPARE(code.size(), 1);
+        wife.join(code.first().at(0).toString(), at(desktop), true);
+        QTRY_COMPARE_WITH_TIMEOUT(confirm.size(), 1, 15000);
+        QCOMPARE(confirm.first().at(1).toString(), Devices::fingerprintOf(desktop.id()));
+        QCOMPARE(confirm.first().at(2).toString(), QString("family"));
+        wife.answer(true);
+        QTRY_COMPARE_WITH_TIMEOUT(joined.size(), 1, 15000);
+        QVERIFY2(wifeFailed.isEmpty(), qPrintable(wifeFailed.value(0).value(0).toString()));
+        QVERIFY(desktopFailed.isEmpty());
+        QCOMPARE(shared.size(), 1);
+        const QVariantMap result = joined.first().at(0).toMap();
+        QCOMPARE(result["universe"].toString(), QString("family-2"));
+        QCOMPARE(result["shared"].toBool(), true);
+        QCOMPARE(result["tasks"].toInt(), 2);
+        const QStringList chores{"Feed the cat", "Take out the bins"};
+        QCOMPARE(titles(Universes(wifeData).dataPath("family-2")), chores);
+
+        // Nothing else of either's came over, and neither trusts the other's computers.
+        QCOMPARE(titles(wifeData), QStringList{"Her own thing"});
+        QCOMPARE(titles(desktopData), QStringList{"My own thing"});
+        QVERIFY(Universes(wifeData).dataPath("client").isEmpty());
+        auto trusted = [](const PeerLink &link) {
+            Devices devices(link.appDir());
+            devices.load();
+            return devices.trustedIds();
+        };
+        QCOMPARE(trusted(wife), QStringList{wife2.id()});
+        QCOMPARE(trusted(desktop), QStringList{laptop.id()});
+
+        // Her other computer gets it through her, and both sides learn of
+        // each other's computers.
+        auto members = [](const PeerLink &link, const QString &universe, const QString &id) {
+            Devices devices(link.appDir());
+            devices.load();
+            Members m(link.appDir());
+            m.load(devices.id());
+            return m.allowed(link.listIdOf(universe), id);
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(!Universes(wife2Data).dataPath("family-2").isEmpty(), 15000);
+        QTRY_COMPARE_WITH_TIMEOUT(titles(Universes(wife2Data).dataPath("family-2")), chores, 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(members(desktop, "family", wife2.id()), 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(members(laptop, "family", wife.id()), 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(members(wife, "family-2", laptop.id()), 15000);
+        {
+            Members m(desktop.appDir());
+            m.load(desktop.id());
+            QCOMPARE(m.member(desktop.listIdOf("family"), wife2.id())->via, wife.id());
+        }
+        // So the laptop can sync it with her directly.
+        laptop.dial(wife.id(), {at(wife)});
+        QTRY_VERIFY_WITH_TIMEOUT(!laptop.linkTo(wife.id()).isEmpty(), 15000);
+
+        // Her changes come back; your client list never goes.
+        {
+            Backend b(Universes(wife2Data).dataPath("family-2"));
+            b.saveTask({{"title", "Water the garden"}});
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(titles(family).contains("Water the garden"), 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(titles(Universes(laptopData).dataPath("family")).contains("Water the garden"), 15000);
+        {
+            Backend c(client);
+            c.saveTask({{"title", "Chase the payment"}});
+        }
+        QTest::qWait(1500);
+        QVERIFY(Universes(wifeData).dataPath("client").isEmpty());
+        QVERIFY(Universes(wife2Data).dataPath("client").isEmpty());
+        QCOMPARE(titles(wifeData), QStringList{"Her own thing"});
+
+        // Removing her, as `universe unshare` does, removes her computers too.
+        {
+            Members m(desktop.appDir());
+            m.load(desktop.id());
+            const QStringList gone = m.remove(desktop.listIdOf("family"), wife.id(), QDateTime::currentDateTime());
+            QCOMPARE(gone.size(), 2);
+            QVERIFY(m.save());
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(desktop.linkTo(wife.id()).isEmpty(), 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(!members(laptop, "family", wife2.id()), 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(laptop.linkTo(wife.id()).isEmpty(), 15000);
+        {
+            Backend b(Universes(wifeData).dataPath("family-2"));
+            b.saveTask({{"title", "Paint the shed"}});
+        }
+        desktop.dial(wife.id(), {at(wife)});
+        QTest::qWait(1500);
+        QVERIFY(!titles(family).contains("Paint the shed"));
+        // She keeps what she had.
+        QVERIFY(titles(Universes(wifeData).dataPath("family-2")).contains("Take out the bins"));
+    }
+
+    // A code for one kind of joining doesn't do the other.
+    void sharingAndPairingCodesDontMix()
+    {
+        QTemporaryDir dir;
+        PeerLink::Options options;
+        options.port = 0;
+        options.mdns = false;
+        options.loopback = true;
+        options.ipc = false;
+        const QString desktopData = dir.filePath("d/needful.json");
+        QString error;
+        Universes(desktopData).add("family", &error);
+        PeerLink desktop(desktopData, options), other(dir.filePath("o/needful.json"), options);
+        QVERIFY(desktop.start(&error) && other.start(&error));
+        QSignalSpy code(&desktop, &PeerLink::pairCode), failed(&other, &PeerLink::failed),
+            confirm(&other, &PeerLink::confirm);
+
+        desktop.share("family");
+        QTRY_VERIFY(desktop.port() > 0);
+        other.join(code.last().at(0).toString(), QString("127.0.0.1:%1").arg(desktop.port()));
+        QTRY_COMPARE_WITH_TIMEOUT(failed.size(), 1, 15000);
+        QVERIFY(failed.last().at(0).toString().contains("needful universe join"));
+
+        desktop.pair();
+        other.join(code.last().at(0).toString(), QString("127.0.0.1:%1").arg(desktop.port()), true);
+        QTRY_COMPARE_WITH_TIMEOUT(failed.size(), 2, 15000);
+        QVERIFY(failed.last().at(0).toString().contains("needful sync join"));
+        QVERIFY(confirm.isEmpty());
+        Devices devices(desktop.appDir());
+        devices.load();
+        QVERIFY(devices.paired().isEmpty());
+        Members members(desktop.appDir());
+        members.load(desktop.id());
+        QVERIFY(members.trustedIds().isEmpty());
+        QVERIFY(Universes(dir.filePath("o/needful.json")).dataPath("family").isEmpty());
+
+        // Your own list is never shared.
+        QSignalSpy refused(&desktop, &PeerLink::failed);
+        desktop.share("mine");
+        QCOMPARE(refused.size(), 1);
+        QVERIFY(refused.first().at(0).toString().contains("only for your computers"));
+    }
+
+    void membersMergeAndRemoveWithWhoCameAlong()
+    {
+        QTemporaryDir dir;
+        const QString a(64, 'a'), b(64, 'b'), c(64, 'c'), d(64, 'd');
+        Members here(dir.filePath("here")), there(dir.filePath("there"));
+        here.load(a);
+        there.load(b);
+        const QDateTime now = QDateTime::currentDateTime();
+        here.add("list", a, "desktop", {}, now);
+        here.add("list", b, "wife-laptop", {}, now);
+        there.merge("list", here.entry("list"));
+        there.add("list", c, "wife-desktop", b, now.addSecs(1));
+        QVERIFY(here.merge("list", there.entry("list")));
+        QVERIFY(!here.merge("list", there.entry("list")));
+        QCOMPARE(here.members("list").size(), 3);
+        QCOMPARE(here.root("list", c), b);
+        QVERIFY(here.allowed("list", c));
+        QVERIFY(!here.allowed("other", c));
+        QCOMPARE(here.find("list", "WIFE-desktop")->id, c);
+        QCOMPARE(here.find("list", "cccc")->id, c);
+
+        // Removing her removes the computer that came with her.
+        QStringList gone = here.remove("list", b, now.addSecs(2));
+        gone.sort();
+        QCOMPARE(gone, (QStringList{b, c}));
+        QVERIFY(there.merge("list", here.entry("list")));
+        QVERIFY(!there.allowed("list", c));
+        QCOMPARE(there.trustedIds(), QStringList{a});
+        // An older addition arriving late doesn't bring her back.
+        Members stale(dir.filePath("stale"));
+        stale.load(d);
+        stale.add("list", b, "wife-laptop", {}, now.addSecs(1));
+        here.merge("list", stale.entry("list"));
+        QVERIFY(!here.allowed("list", b));
     }
 
     void linkUnitRunsSyncLink()
