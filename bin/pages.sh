@@ -29,24 +29,30 @@ parse_publish() {
     esac
 }
 
-# Sets VERSION and TAG from needful.pro, on a clean checkout whose tag, if
-# it's made yet, is this commit.
+# Sets VERSION and TAG from needful.pro, on a clean checkout, and SOURCE to
+# the commit that is the release: TAG's, once it's made, so commits after it
+# (a fix to these scripts, say) change how it's published but not what ships.
 release_version() {
     [ -z "$(git -C "$ROOT" status --porcelain)" ] || die "commit or stash your changes first."
     VERSION="$(sed -n 's/^VERSION *= *//p' "$ROOT/needful.pro")"
     TAG="v$VERSION"
+    SOURCE="$(git -C "$ROOT" rev-parse HEAD)"
     if git -C "$ROOT" rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-        [ "$(git -C "$ROOT" rev-parse "$TAG^{commit}")" = "$(git -C "$ROOT" rev-parse HEAD)" ] ||
-            die "$TAG already tags another commit. Bump the version first."
+        tagged="$(git -C "$ROOT" rev-parse "$TAG^{commit}")"
+        if [ "$tagged" != "$SOURCE" ]; then
+            SOURCE="$tagged"
+            echo "Releasing $TAG as tagged, from $(git -C "$ROOT" rev-parse --short "$SOURCE"), not this commit."
+            echo "To ship this commit, bump the version."
+        fi
     fi
 }
 
 # The release notes as <li> lines: commit subjects since the last release,
 # oldest first.
 release_notes() {
-    last="$(git -C "$ROOT" describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null || true)"
+    last="$(git -C "$ROOT" describe --tags --abbrev=0 --match 'v*' "$SOURCE^" 2>/dev/null || true)"
     notes=""
-    [ -z "$last" ] || notes="$(git -C "$ROOT" log --reverse --format=%s "$last"..HEAD |
+    [ -z "$last" ] || notes="$(git -C "$ROOT" log --reverse --format=%s "$last..$SOURCE" |
         sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g' | sed 's|.*|<li>&</li>|')"
     printf '%s\n' "${notes:-<li>First release.</li>}"
 }
@@ -110,6 +116,16 @@ EOF
     commit="$(git -C "$PAGES" commit-tree "$tree" -m "$1")"
     git -C "$PAGES" update-ref refs/heads/gh-pages "$commit"
     git -C "$ROOT" rev-parse -q --verify "refs/tags/$TAG" >/dev/null || git -C "$ROOT" tag "$TAG"
+}
+
+# For a version gh-pages on origin already has: with --publish, finishes a
+# publish that stopped after pushing gh-pages; without it, says so. Exits.
+pages_finish() { # what
+    [ "$PUBLISH" = 1 ] || die "$1 is already published. Bump the version to release another."
+    echo "$1 is already on gh-pages; finishing its publish."
+    pages_publish "$1"
+    echo "Published."
+    exit 0
 }
 
 # Pushes the tag and gh-pages, and turns on GitHub Pages the first time.

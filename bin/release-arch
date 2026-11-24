@@ -38,8 +38,9 @@ gpg --list-secret-keys "$KEY" >/dev/null 2>&1 || die "gpg has no secret key $KEY
 FINGERPRINT="$(gpg --with-colons --fingerprint "$KEY" | awk -F: '/^fpr:/ { print $10; exit }')"
 cd "$ROOT"
 release_version
-PKGREL="$(sed -n 's/^pkgrel=//p' pkgbuild/PKGBUILD)"
-[ "$(sed -n 's/^pkgver=//p' pkgbuild/PKGBUILD)" = "$VERSION" ] ||
+PKGBUILD_TEXT="$(git show "$SOURCE:pkgbuild/PKGBUILD")"
+PKGREL="$(printf '%s\n' "$PKGBUILD_TEXT" | sed -n 's/^pkgrel=//p')"
+[ "$(printf '%s\n' "$PKGBUILD_TEXT" | sed -n 's/^pkgver=//p')" = "$VERSION" ] ||
     die "pkgbuild/PKGBUILD's pkgver isn't $VERSION, the VERSION in needful.pro."
 FULL="$VERSION-$PKGREL"
 pages_checkout
@@ -50,6 +51,7 @@ REPO="$PAGES/arch/x86_64"
 mkdir -p "$REPO"
 published="$(ls "$REPO" | sed -n "s/^$REPO_NAME-\([^-]*-[^-]*\)-x86_64\.pkg\.tar\.[a-z0-9]*\$/\1/p" | head -1)"
 if [ -n "$published" ]; then
+    [ "$REMOTE_PAGES" = 1 ] && [ "$published" = "$FULL" ] && pages_finish "Needful $FULL for Arch"
     # One made here by a run without --publish, and not on origin, is made again.
     if [ "$REMOTE_PAGES" = 1 ] || [ "$published" != "$FULL" ]; then
         [ "$(vercmp "$FULL" "$published")" -gt 0 ] ||
@@ -57,16 +59,16 @@ if [ -n "$published" ]; then
     fi
 fi
 
-# The chroot can't see this checkout, so it builds an export of this commit,
-# named in a copy of the PKGBUILD with its hash.
+# The chroot can't see this checkout, so it builds an export of the release's
+# commit, named in that commit's PKGBUILD with its hash.
 STAGE="$ROOT/build/arch"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/out"
 TARBALL="$REPO_NAME-$VERSION.tar.gz"
-git archive --format=tar.gz --prefix="$REPO_NAME-$VERSION/" -o "$STAGE/$TARBALL" HEAD
+git archive --format=tar.gz --prefix="$REPO_NAME-$VERSION/" -o "$STAGE/$TARBALL" "$SOURCE"
 SHA256="$(sha256sum "$STAGE/$TARBALL" | cut -d' ' -f1)"
-sed -e "s/^_tarball=\$/_tarball=$TARBALL/" -e "s/^_sha256=\$/_sha256=$SHA256/" \
-    pkgbuild/PKGBUILD >"$STAGE/PKGBUILD"
+printf '%s\n' "$PKGBUILD_TEXT" |
+    sed -e "s/^_tarball=\$/_tarball=$TARBALL/" -e "s/^_sha256=\$/_sha256=$SHA256/" >"$STAGE/PKGBUILD"
 grep -q "^_tarball=$TARBALL\$" "$STAGE/PKGBUILD" && grep -q "^_sha256=$SHA256\$" "$STAGE/PKGBUILD" ||
     die "couldn't fill in _tarball and _sha256 in pkgbuild/PKGBUILD."
 

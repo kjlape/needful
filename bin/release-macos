@@ -40,7 +40,7 @@ mkdir -p "$ITEMS"
 # A version already on origin is never replaced: copies that have it would
 # never see the new build. One only made here, by a run without --publish,
 # is made again.
-[ "$REMOTE_PAGES" = 1 ] && [ -f "$ITEMS/$VERSION.xml" ] && die "$VERSION is already published for macOS. Bump the version first."
+[ "$REMOTE_PAGES" = 1 ] && [ -f "$ITEMS/$VERSION.xml" ] && pages_finish "Needful $VERSION for macOS"
 rm -f "$ITEMS/$VERSION.xml"
 newest="$(ls "$ITEMS" | sed 's/\.xml$//' | sort -V | tail -1)"
 if [ -n "$newest" ]; then
@@ -48,10 +48,19 @@ if [ -n "$newest" ]; then
         die "$VERSION is older than the published $newest."
 fi
 
-NEEDFUL_CODESIGN_IDENTITY="$IDENTITY" NEEDFUL_PAGES_URL="$PAGES_URL" "$ROOT/bin/build-macos"
-SPARKLE_BIN="$(ls -d "$ROOT"/build/sparkle/*/bin | sort -V | tail -1)"
+# The release's commit builds with its own bin/build-macos, in a checkout of
+# its own when it isn't this one.
+TREE="$ROOT"
+if [ "$SOURCE" != "$(git rev-parse HEAD)" ]; then
+    TREE="$ROOT/build/release-tree"
+    git worktree remove --force "$TREE" 2>/dev/null || rm -rf "$TREE"
+    git worktree prune
+    git worktree add -q --detach "$TREE" "$SOURCE"
+fi
+NEEDFUL_CODESIGN_IDENTITY="$IDENTITY" NEEDFUL_PAGES_URL="$PAGES_URL" "$TREE/bin/build-macos"
+SPARKLE_BIN="$(ls -d "$TREE"/build/sparkle/*/bin | sort -V | tail -1)"
 DMG_NAME="Needful-$VERSION.dmg"
-cp "$ROOT/build/macos/$DMG_NAME" "$MACOS/$DMG_NAME"
+cp "$TREE/build/macos/$DMG_NAME" "$MACOS/$DMG_NAME"
 
 # Signs with the private key generate_keys put in the login Keychain, and
 # prints the attributes the appcast needs: sparkle:edSignature and length.
