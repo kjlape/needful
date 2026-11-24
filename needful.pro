@@ -3,7 +3,7 @@ QT += core gui qml quick quickcontrols2 network
 CONFIG += c++17 release
 TARGET = needful
 TEMPLATE = app
-VERSION = 0.13.0
+VERSION = 0.13.1
 DEFINES += APP_VERSION=\\\"$$VERSION\\\"
 
 HEADERS += \
