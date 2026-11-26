@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Needful</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 42rem; margin: 3rem auto; padding: 0 1rem; color: #1a1a1a; background: #fff; }
+  pre { background: #f2f2f2; padding: .75rem 1rem; overflow-x: auto; }
+  img { width: 64px; height: 64px; }
+  @media (prefers-color-scheme: dark) { body { color: #e6e6e6; background: #0e0e10; } pre { background: #1c1c20; } a { color: #ffd60a; } }
+</style>
+<img src="needful.svg" alt="">
+<h1>Needful</h1>
+<p>What needs doing, most needful first.</p>
+<h2>Arch Linux</h2>
+<p>Trust the key that signs the repository, once. Its fingerprint is
+<code>3396C85308E3F813688EE845B825CFDD5CE15170</code>.</p>
+<pre>curl -fsSLO https://kjlape.github.io/needful/arch/needful.gpg
+sudo pacman-key --add needful.gpg
+sudo pacman-key --lsign-key 3396C85308E3F813688EE845B825CFDD5CE15170</pre>
+<p>Add the repository to <code>/etc/pacman.conf</code>:</p>
+<pre>[needful]
+SigLevel = Required
+Server = https://github.com/kjlape/needful/releases/latest/download</pre>
+<p>Then install Needful 0.15.0:</p>
+<pre>sudo pacman -Syu needful</pre>
+<p>New releases arrive with <code>pacman -Syu</code>. For x86_64.</p>
+<p>A <code>Server</code> line ending in <code>/arch/$arch</code> is from before
+the repository moved to GitHub releases; replace it with this one.</p>
+<h2>Any Linux, with Flatpak</h2>
+<pre>flatpak install --user https://kjlape.github.io/needful/flatpak/io.github.kjlape.Needful.flatpakref</pre>
+<p>Then open Needful from your app launcher, or run <code>flatpak run io.github.kjlape.Needful</code>.
+New releases arrive with <code>flatpak update</code>. Version 0.15.0, for x86_64.</p>
+<p>The command line is <code>flatpak run io.github.kjlape.Needful &lt;command&gt;</code>. The
+sandbox can't install services, so the phone page's service and the sync
+service need the Arch package, or a systemd unit of your own.</p>
+<h2>macOS</h2>
+<p><a href="https://github.com/kjlape/needful/releases/download/v0.15.0/Needful-0.15.0.dmg">Download Needful 0.15.0</a>, open it, and drag Needful to Applications.</p>
+<p>It isn't notarized by Apple, so the first time you open it macOS refuses.
+Open System Settings, then Privacy &amp; Security, and click Open Anyway. Or, in Terminal:</p>
+<pre>xattr -dr com.apple.quarantine /Applications/Needful.app</pre>
+<p>After that it updates itself, and only installs updates signed with the key it came with.</p>
+</html>

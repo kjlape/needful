@@ -1,0 +1,11 @@
+    <item>
+      <title>Needful 0.13.1</title>
+      <pubDate>Tue, 24 Nov 2026 17:16:59 +0000</pubDate>
+      <sparkle:version>0.13.1</sparkle:version>
+      <sparkle:shortVersionString>0.13.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[<ul>
+<li>Pin the Sparkle public key so macOS builds update themselves, and bump to 0.13.1</li>
+</ul>]]></description>
+      <enclosure url="https://github.com/kjlape/needful/releases/download/v0.13.1/Needful-0.13.1.dmg" type="application/octet-stream" sparkle:edSignature="c/i3K9a4Aq0cxXN/T4HjiF7DeQ9Fvwf2WqIIX02LOZIf7felQLOXG31fbmXrPBSk6xrS01xonKDSdwUCVoYKCA==" length="73547871"/>
+    </item>

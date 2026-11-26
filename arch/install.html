@@ -1,0 +1,15 @@
+<h2>Arch Linux</h2>
+<p>Trust the key that signs the repository, once. Its fingerprint is
+<code>3396C85308E3F813688EE845B825CFDD5CE15170</code>.</p>
+<pre>curl -fsSLO https://kjlape.github.io/needful/arch/needful.gpg
+sudo pacman-key --add needful.gpg
+sudo pacman-key --lsign-key 3396C85308E3F813688EE845B825CFDD5CE15170</pre>
+<p>Add the repository to <code>/etc/pacman.conf</code>:</p>
+<pre>[needful]
+SigLevel = Required
+Server = https://github.com/kjlape/needful/releases/latest/download</pre>
+<p>Then install Needful 0.15.0:</p>
+<pre>sudo pacman -Syu needful</pre>
+<p>New releases arrive with <code>pacman -Syu</code>. For x86_64.</p>
+<p>A <code>Server</code> line ending in <code>/arch/$arch</code> is from before
+the repository moved to GitHub releases; replace it with this one.</p>

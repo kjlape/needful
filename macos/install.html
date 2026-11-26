@@ -1,0 +1,6 @@
+<h2>macOS</h2>
+<p><a href="https://github.com/kjlape/needful/releases/download/v0.15.0/Needful-0.15.0.dmg">Download Needful 0.15.0</a>, open it, and drag Needful to Applications.</p>
+<p>It isn't notarized by Apple, so the first time you open it macOS refuses.
+Open System Settings, then Privacy &amp; Security, and click Open Anyway. Or, in Terminal:</p>
+<pre>xattr -dr com.apple.quarantine /Applications/Needful.app</pre>
+<p>After that it updates itself, and only installs updates signed with the key it came with.</p>

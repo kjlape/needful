@@ -1,0 +1,11 @@
+    <item>
+      <title>Needful 0.15.0</title>
+      <pubDate>Thu, 26 Nov 2026 01:34:35 +0000</pubDate>
+      <sparkle:version>0.15.0</sparkle:version>
+      <sparkle:shortVersionString>0.15.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[<ul>
+<li>Put release binaries on GitHub releases, with gh-pages pointing to them, and bump to 0.15.0</li>
+</ul>]]></description>
+      <enclosure url="https://github.com/kjlape/needful/releases/download/v0.15.0/Needful-0.15.0.dmg" type="application/octet-stream" sparkle:edSignature="PZCPpwcJTZlgtrq0YK8Qt1o+gqJRcyU0EOsTVpHCYCcF4xo5Cn7Qwa/rhhc5xBVsziOz4VzvmoxfwLIEnZFSAw==" length="73863652"/>
+    </item>
