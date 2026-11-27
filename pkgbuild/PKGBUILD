@@ -1,5 +1,5 @@
 pkgname=lape-needful
-pkgver=0.15.0
+pkgver=0.15.1
 pkgrel=1
 pkgdesc='Routine tasks, most needful first'
 arch=('x86_64' 'aarch64')
