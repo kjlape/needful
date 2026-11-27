@@ -1,4 +1,4 @@
-pkgname=needful
+pkgname=lape-needful
 pkgver=0.15.0
 pkgrel=1
 pkgdesc='Routine tasks, most needful first'
@@ -7,6 +7,9 @@ license=('MIT')
 depends=('qt6-base' 'qt6-declarative' 'qt6-wayland')
 optdepends=('tailscale: serve Needful on your tailnet')
 makedepends=('gcc' 'make' 'cargo')
+# Renamed from needful; replaces moves machines with the old package over.
+conflicts=('needful')
+replaces=('needful')
 
 # bin/install builds this checkout. bin/release-arch fills in _tarball and
 # _sha256 with an export of the tagged commit, so a clean chroot, which can't

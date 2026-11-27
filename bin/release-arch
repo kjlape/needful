@@ -25,6 +25,9 @@ set -eu
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 . "$ROOT/bin/pages.sh"
 REPO_NAME=needful
+# The package inside the repository. It was needful up to 0.15.0; its
+# replaces=() moves machines over on their next pacman -Syu.
+PKG_NAME=lape-needful
 
 parse_publish "$@"
 command -v repo-add >/dev/null && command -v vercmp >/dev/null || die "this runs on Arch Linux, with pacman."
@@ -73,8 +76,8 @@ fi
 STAGE="$ROOT/build/arch"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/out"
-TARBALL="$REPO_NAME-$VERSION.tar.gz"
-git archive --format=tar.gz --prefix="$REPO_NAME-$VERSION/" -o "$STAGE/$TARBALL" "$SOURCE"
+TARBALL="$PKG_NAME-$VERSION.tar.gz"
+git archive --format=tar.gz --prefix="$PKG_NAME-$VERSION/" -o "$STAGE/$TARBALL" "$SOURCE"
 SHA256="$(sha256sum "$STAGE/$TARBALL" | cut -d' ' -f1)"
 printf '%s\n' "$PKGBUILD_TEXT" |
     sed -e "s/^_tarball=\$/_tarball=$TARBALL/" -e "s/^_sha256=\$/_sha256=$SHA256/" >"$STAGE/PKGBUILD"
@@ -96,7 +99,7 @@ PACKAGE="$(basename "$PACKAGE_PATH")"
 cd "$ROOT"
 
 # A fresh database each time, since each release carries its own.
-rm -f "$REPO/$REPO_NAME"-*.pkg.tar.* "$REPO/$REPO_NAME".db* "$REPO/$REPO_NAME".files*
+rm -f "$REPO/$REPO_NAME"-*.pkg.tar.* "$REPO/$PKG_NAME"-*.pkg.tar.* "$REPO/$REPO_NAME".db* "$REPO/$REPO_NAME".files*
 cp "$PACKAGE_PATH" "$REPO/$PACKAGE"
 gpg --batch --yes --local-user "$KEY" --detach-sign --output "$REPO/$PACKAGE.sig" "$REPO/$PACKAGE"
 repo-add --quiet --sign --key "$KEY" "$REPO/$REPO_NAME.db.tar.gz" "$REPO/$PACKAGE"
@@ -129,7 +132,7 @@ sudo pacman-key --lsign-key $FINGERPRINT</pre>
 SigLevel = Required
 Server = $RELEASES_URL/latest/download</pre>
 <p>Then install Needful $VERSION:</p>
-<pre>sudo pacman -Syu $REPO_NAME</pre>
+<pre>sudo pacman -Syu $PKG_NAME</pre>
 <p>New releases arrive with <code>pacman -Syu</code>. For x86_64.</p>
 <p>A <code>Server</code> line ending in <code>/arch/\$arch</code> is from before
 the repository moved to GitHub releases; replace it with this one.</p>

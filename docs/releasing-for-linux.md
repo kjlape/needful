@@ -104,8 +104,10 @@ SigLevel = Required
 Server = https://github.com/kjlape/needful/releases/latest/download
 ```
 
-and `sudo pacman -Syu needful`. A copy installed with `bin/install` has the
-same name, so the repository's next release replaces it.
+and `sudo pacman -Syu lape-needful`. A copy installed with `bin/install` has the
+same name, so the repository's next release replaces it. The package was
+named `needful` up to 0.15.0; `replaces=('needful')` in the PKGBUILD moves
+machines that have it over on their next `pacman -Syu`.
 
 Machines set up before 0.15.0 have `Server = https://kjlape.github.io/needful/arch/$arch`.
 That repository is gone, so `pacman -Syu` fails until the line is replaced
